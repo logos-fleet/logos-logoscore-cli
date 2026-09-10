@@ -498,6 +498,12 @@ int Daemon::start(int argc, char* argv[],
     std::string persistenceBase = Config::dataDir();
     logos_core_set_persistence_base_path(persistenceBase.c_str());
 
+    // 4a2. Install the container assertion before any module loads: it is
+    //      evaluated per load, so it has to be in place before the first one.
+    //      Empty => NULL, which the runtime reads as "auto".
+    logos_core_set_container_policy(
+        cfg.container.empty() ? nullptr : cfg.container.c_str());
+
     // 4b. Install the access policy before any module loads. Empty =>
     //     NULL (clear). Runtime side is currently a no-op.
     logos_core_set_access_policy(

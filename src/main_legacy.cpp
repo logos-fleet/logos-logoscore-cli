@@ -146,6 +146,23 @@ int main(int argc, char *argv[])
     auto* persistencePathOpt = app.add_option("--persistence-path", persistencePath,
         "Base directory for module instance persistence (default: ~/.logoscore/data)");
 
+    // --container: which container this daemon's modules must run in.
+    //
+    // An ASSERTION, not a switch. Which container runs a module is decided by
+    // its ARTIFACT — a Bare module image runs in-process in the Native
+    // container, a Qt plugin runs in a subprocess host — and no flag can turn
+    // one into the other. `--container inproc` therefore means "every module
+    // here must be a Bare module", and a Qt plugin under it is refused rather
+    // than quietly subprocessed. Without that, the flag would mean "in-process
+    // if you happen to have built it that way", which is not something a CI job
+    // can assert or an operator can rely on.
+    std::string containerArg;
+    auto* containerOpt = app.add_option("--container", containerArg,
+        "Require modules to run in a specific container: auto (default) | "
+        "inproc (every module must be a Bare module) | subprocess (every module "
+        "must be a Qt plugin)");
+    containerOpt->check(CLI::IsMember({"auto", "inproc", "subprocess"}));
+
     // --access-policy: inter-module access policy (the literal `enforce`, a
     // file path, or inline JSON). Daemon-only; forwarded to the runtime before
     // modules load. Absent => no policy => enforcement off, as before.
@@ -513,6 +530,7 @@ int main(int argc, char *argv[])
                              || (moduleTransportOpt->count() > 0)
                              || (insecureTcpOpt->count()     > 0)
                              || (accessPolicyOpt->count()    > 0)
+                             || (containerOpt->count()       > 0)
                              || (accessGroupOpt->count()     > 0);
         if (anyCliFlag) configSource = "cli";
 
@@ -557,6 +575,7 @@ int main(int argc, char *argv[])
             mergedCfg.dirs.data       = resolved;
         }
         if (insecureTcpOpt->count() > 0)     mergedCfg.insecureTcp     = insecureTcp;
+        if (containerOpt->count() > 0)       mergedCfg.container       = containerArg;
         if (accessGroupOpt->count() > 0)     mergedCfg.accessGroup     = accessGroupArg;
         // Resolve --access-policy (file-or-inline); abort on bad input.
         if (accessPolicyOpt->count() > 0) {
