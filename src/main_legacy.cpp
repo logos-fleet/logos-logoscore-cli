@@ -150,18 +150,24 @@ int main(int argc, char *argv[])
     //
     // An ASSERTION, not a switch. Which container runs a module is decided by
     // its ARTIFACT — a Bare module image runs in-process in the Native
-    // container, a Qt plugin runs in a subprocess host — and no flag can turn
-    // one into the other. `--container inproc` therefore means "every module
-    // here must be a Bare module", and a Qt plugin under it is refused rather
-    // than quietly subprocessed. Without that, the flag would mean "in-process
-    // if you happen to have built it that way", which is not something a CI job
-    // can assert or an operator can rely on.
+    // container, a Qt plugin runs in a subprocess host, a web variant runs in a
+    // webview in the Web container — and no flag can turn one into another.
+    // `--container inproc` therefore means "every module here must be a Bare
+    // module", and a Qt plugin under it is refused rather than quietly
+    // subprocessed. Without that, the flag would mean "in-process if you happen
+    // to have built it that way", which is not something a CI job can assert or
+    // an operator can rely on.
+    //
+    // `--container web` additionally needs this process to HAVE a webview: a
+    // page is not something a headless binary can run by wanting to. The
+    // runtime reports the missing bridge by name when a web module is loaded
+    // without one (LogosCore::setWebModuleViewFactory).
     std::string containerArg;
     auto* containerOpt = app.add_option("--container", containerArg,
         "Require modules to run in a specific container: auto (default) | "
         "inproc (every module must be a Bare module) | subprocess (every module "
-        "must be a Qt plugin)");
-    containerOpt->check(CLI::IsMember({"auto", "inproc", "subprocess"}));
+        "must be a Qt plugin) | web (every module must be a web variant)");
+    containerOpt->check(CLI::IsMember({"auto", "inproc", "subprocess", "web"}));
 
     // --access-policy: inter-module access policy (the literal `enforce`, a
     // file path, or inline JSON). Daemon-only; forwarded to the runtime before
