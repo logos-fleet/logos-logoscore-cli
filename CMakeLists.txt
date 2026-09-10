@@ -197,6 +197,11 @@ set(SHARED_SOURCES
     src/client/commands/catalog_command.cpp
     src/client/commands/config_command.cpp
 
+    # The Web container's desktop backend: spawn a page host, speak the web
+    # transport to it over a loopback socket. No browser in THIS binary -- see
+    # src/web/webhost_view.h for why the page runs in a child process.
+    src/web/webhost_view.cpp
+
     # Core service (in-process daemon module)
     src/core_service/core_service_impl.cpp
     src/core_service/call_envelope.cpp
@@ -290,6 +295,30 @@ else()
 endif()
 
 endforeach()
+
+# ── The webview host ──────────────────────────────────────────────────────────
+#
+# A SEPARATE BINARY in a SEPARATE PROJECT (src/webhost), and OFF by default. It
+# is the only thing in this repo that links Qt WebEngine, and Chromium is not
+# something a headless CLI should carry to run a module that is not a page:
+# `logoscore` built without it behaves exactly as it does today, and a `web`
+# module reports the missing bridge by name.
+#
+# When it IS built here it lands in bin/ beside the daemon, which is the first
+# place the backend looks. The `webhost` nix output builds src/webhost on its
+# own instead, and `LOGOSCORE_WEBHOST` points the daemon at it.
+option(LOGOSCORE_WITH_WEBENGINE
+       "Build logoscore-webhost, the Qt WebEngine page host for `--container web`"
+       OFF)
+
+if(LOGOSCORE_WITH_WEBENGINE)
+    if(WIN32)
+        message(FATAL_ERROR
+            "LOGOSCORE_WITH_WEBENGINE is not supported on Windows: the backend "
+            "that spawns this host is POSIX (see src/web/webhost_view.cpp).")
+    endif()
+    add_subdirectory(src/webhost)
+endif()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 #

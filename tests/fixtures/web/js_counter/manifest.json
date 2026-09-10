@@ -1,0 +1,10 @@
+{
+  "name": "js_counter",
+  "version": "1.0.0",
+  "type": "core",
+  "category": "misc",
+  "description": "A Logos module that is a page: HTML and JavaScript, served by the browser build of logos-js-sdk over the web transport.",
+  "author": "Logos Core Team",
+  "main": "index.html",
+  "dependencies": []
+}

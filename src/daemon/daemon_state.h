@@ -111,14 +111,15 @@ struct DaemonConfig {
     // retype it next launch. False by default.
     bool insecureTcp = false;
     // Which CONTAINER this daemon's modules must run in: "auto" (or empty,
-    // the default) | "inproc" | "subprocess". Pushed into the runtime before
-    // any module loads.
+    // the default) | "inproc" | "subprocess" | "web". Pushed into the runtime
+    // before any module loads.
     //
     // An ASSERTION rather than a switch, because a module has one artifact and
-    // no flag turns a Qt plugin into a Bare module: "inproc" means every module
-    // here must BE a Bare module, and a Qt plugin is refused rather than
-    // quietly subprocessed. That is what lets a CI job assert the Native
-    // container actually ran the thing. See logos_core_set_container_policy.
+    // no flag turns a Qt plugin into a Bare module or into a page: "inproc"
+    // means every module here must BE a Bare module, and a Qt plugin is refused
+    // rather than quietly subprocessed. That is what lets a CI job assert the
+    // Native — or the Web — container actually ran the thing. See
+    // logos_core_set_container_policy.
     std::string container;
     // Inter-module access policy: resolved JSON text (from --access-policy
     // file or inline). Empty means none. Persisted across launches.

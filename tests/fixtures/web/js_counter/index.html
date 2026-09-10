@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>js_counter</title>
+  <!--
+    THE FIRST LOGOS MODULE THAT IS A PAGE.
+
+    There is no C++ in it, no generated glue and no build step beyond copying
+    these two files next to the SDK bundle: what makes this a module is that it
+    answers the web transport's Methods and Call messages, and logos-js-sdk's
+    WebProvider is what does that. The Web container opens the page, asks it for
+    its contract, and publishes whatever comes back under the name the package
+    manifest owns.
+  -->
+  <script src="logos-web.js"></script>
+</head>
+<body>
+<script>
+(async function () {
+  // The host hands the page its channel. `window.logosChannelReady` is
+  // logoscore-webhost's contract -- a Promise of the five-method channel shape
+  // in logos-js-sdk's README -- and it is deliberately the ONLY host-specific
+  // thing here: swap the webview for a MessagePort or a worker and only this
+  // line changes.
+  const channel = await window.logosChannelReady;
+
+  let count = 0;
+  const provider = new LogosWeb.WebProvider('js_counter');
+
+  // The page's own CONSUMER. Assigned below, once the provider has a peer to
+  // lend it; the handlers close over it and none of them can run before then.
+  let logos = null;
+
+  // Every event a native module has pushed at this page, newest last.
+  const heard = [];
+
+  provider.register({
+    handlers: {
+      // The acceptance criterion's own method: add(1, 2) is 3.
+      // Numbers arrive as numbers over the wire; Number() is for the operator
+      // who types `logoscore call js_counter add 1 2`, where they are strings.
+      add: (a, b) => Number(a) + Number(b),
+
+      // State, to prove the page is one live module across calls rather than a
+      // function evaluated fresh each time.
+      increment: (by) => {
+        count += Number(by === undefined ? 1 : by);
+        provider.emit('counted', count);
+        return count;
+      },
+      value: () => count,
+
+      // A handler that returns a Promise, because the provider allows it and a
+      // page's real work (fetch, IndexedDB, crypto) is asynchronous.
+      later: (text) => new Promise((resolve) => setTimeout(() => resolve(String(text)), 10)),
+
+      // ── the page calling OUT ──────────────────────────────────────────────
+
+      // Call a native module, as this module. NO TOKEN IS PRESENTED and none is
+      // needed: the container routes this through the module's own LogosAPI,
+      // whose first call to a target runs the requestModule handshake against
+      // capability_module and presents what it minted. A page gets exactly the
+      // authority a native caller gets, granted by the same module.
+      callNative: (module, method, ...args) =>
+        logos.module(String(module)).call(String(method), ...args),
+
+      // The explicit form of the same handshake, for a page that wants the
+      // token itself. requestModule takes the ORIGIN and the target: on this
+      // wire a module's identity is the channel, but capability_module's own
+      // signature predates that and still asks who is calling.
+      grant: (module) =>
+        logos.module('capability_module')
+             .call('requestModule', provider.name, String(module)),
+
+      // What a native module emits, as seen from inside the page. Returns
+      // immediately: a Subscribe is fire-and-forget on this wire, and the
+      // module being watched may not even be loaded yet.
+      watchNative: (module, eventName) => {
+        logos.module(String(module)).on(String(eventName), (...data) => {
+          heard.push({ module: String(module), event: String(eventName), data });
+          provider.emit('heard', heard.length);
+        });
+        return true;
+      },
+      heardEvents: () => heard,
+    },
+    events: ['counted', 'heard'],
+
+    // The credential the core minted for this module, relayed across the
+    // channel by WebModuleGlue. Saving it SHUTS THE DOOR: until one is saved a
+    // WebProvider answers anyone, and from here on a call must carry this
+    // token. That is the page half of ADR 0005 -- the module validates inside
+    // the webview, not only in the host.
+    onToken: (moduleName, token) => provider.saveToken(moduleName, token),
+  });
+
+  // ATTACH LAST, as before -- a page that answered a call before it registered
+  // would report "unknown method" for a method it has.
+  //
+  // The client borrows the peer the provider is now serving on, because a
+  // module is not only something the host calls: this page asks
+  // capability_module for access, calls native modules and watches what they
+  // emit, and all of it goes back down the ONE channel the host handed it. A
+  // second WebPeer over that channel would install its single receiver and
+  // silently take every message from the first.
+  const peer = provider.attach(channel);
+  logos = new LogosWeb.WebClient('js_counter', { peer });
+})();
+</script>
+</body>
+</html>
