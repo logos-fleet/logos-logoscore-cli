@@ -163,6 +163,7 @@ json daemonConfigToJson(const DaemonConfig& cfg, bool includeSecrets)
     obj["logging"] = std::move(logObj);
 
     obj["insecure_tcp"] = cfg.insecureTcp;
+    if (!cfg.container.empty())    obj["container"] = cfg.container;
     if (!cfg.accessPolicy.empty()) obj["access_policy"] = cfg.accessPolicy;
     if (!cfg.accessGroup.empty())  obj["access_group"]  = cfg.accessGroup;
     // Omitted when unset, like access_policy: an empty string is not a valid
@@ -275,6 +276,7 @@ std::optional<DaemonConfig> daemonConfigFromJson(const json& obj,
     }
 
     cfg.insecureTcp  = r.boolean("insecure_tcp", false);
+    cfg.container = r.str("container");
     cfg.accessPolicy = r.str("access_policy");
     cfg.accessGroup  = r.str("access_group");
 
