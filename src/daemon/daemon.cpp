@@ -466,15 +466,15 @@ int Daemon::start(int argc, char* argv[],
     // Bare build of it in its own `-m` directory still loaded the Qt one into a
     // subprocess, and the daemon reported the in-process container as running
     // with its trust root outside it.
-    //
-    //    Resolve to absolute paths: logos_core cannot load plugin metadata from relative paths.
-    std::string bundledDir = paths::bundledModulesDir();
+    const std::string bundledDir = paths::bundledModulesDir();
     if (!bundledDir.empty()) {
         logos_core_add_modules_dir(bundledDir.c_str());
         if (verbose)
             fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
 
+    // Resolve to absolute paths: logos_core cannot load plugin metadata from
+    // relative paths.
     for (const std::string& dir : modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
