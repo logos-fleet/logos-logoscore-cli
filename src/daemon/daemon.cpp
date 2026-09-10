@@ -450,8 +450,31 @@ int Daemon::start(int argc, char* argv[],
     // 2. Initialize logos core
     logos_core_init(argc, argv);
 
-    // 3. Add plugin directories — user-specified and bundled
-    //    Resolve to absolute paths: logos_core cannot load plugin metadata from relative paths.
+    // 3. Add plugin directories — bundled first, then user-specified.
+    //
+    // ORDER IS PRECEDENCE, and later wins: the runtime scans these in order and
+    // a module name seen twice keeps the last one (logos-package-manager's
+    // enumerateManifests). So the bundle — what this binary happens to ship
+    // with — goes first, and a directory the OPERATOR named on the command line
+    // outranks it. That is the same rule the session modules directory below
+    // already relies on by being added last.
+    //
+    // It used to be the other way round, which made `-m` the LOWEST precedence
+    // of the three and meant an operator could not replace a bundled module at
+    // all. `--container inproc` is where that stopped being theoretical: the
+    // bundle ships capability_module as a Qt plugin, so a run that supplied the
+    // Bare build of it in its own `-m` directory still loaded the Qt one into a
+    // subprocess, and the daemon reported the in-process container as running
+    // with its trust root outside it.
+    const std::string bundledDir = paths::bundledModulesDir();
+    if (!bundledDir.empty()) {
+        logos_core_add_modules_dir(bundledDir.c_str());
+        if (verbose)
+            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
+    }
+
+    // Resolve to absolute paths: logos_core cannot load plugin metadata from
+    // relative paths.
     for (const std::string& dir : modulesDirs) {
         std::error_code ec;
         std::string absDir = std::filesystem::absolute(dir, ec).string();
@@ -459,13 +482,6 @@ int Daemon::start(int argc, char* argv[],
         if (verbose)
             fprintf(stderr, "Added plugins directory: %s\n", resolved);
         logos_core_add_modules_dir(resolved);
-    }
-
-    std::string bundledDir = paths::bundledModulesDir();
-    if (!bundledDir.empty()) {
-        logos_core_add_modules_dir(bundledDir.c_str());
-        if (verbose)
-            fprintf(stderr, "Added bundled modules directory: %s\n", bundledDir.c_str());
     }
 
     // 3b. The session's own writable modules directory — where anything
