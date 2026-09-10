@@ -48,12 +48,18 @@
     logos-package-manager-module.url = "github:logos-co/logos-package-manager-module";
     logos-package-downloader-module.url = "github:logos-co/logos-package-downloader-module";
     logos-test-modules.url = "github:logos-co/logos-test-modules";
+    # The BROWSER build of the SDK, for the `web-fixture` output only: nothing
+    # this repo compiles depends on it. It is what makes js_counter a module
+    # built with the published SDK rather than a page with the wire hand-rolled
+    # into it -- the fixture would still "work" that way and would stop being
+    # evidence that a module author can do this.
+    logos-js-sdk.url = "github:logos-co/logos-js-sdk";
     nix-bundle-logos-module-install.url = "github:logos-co/nix-bundle-logos-module-install";
     nix-bundle-dir.url = "github:logos-co/nix-bundle-dir";
     nix-bundle-appimage.url = "github:logos-co/nix-bundle-appimage";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-plugin-qt, logos-liblogos, logos-package-manager, logos-capability-module, logos-modules-state-module, logos-package-manager-module, logos-package-downloader-module, logos-test-modules, logos-js-sdk, nix-bundle-logos-module-install, nix-bundle-dir, nix-bundle-appimage }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       # Build info baked into the logosctl binary so `--version` reports the
@@ -234,6 +240,71 @@
 
               echo "Modules directory contents:"
               ls -laR $out/modules/
+            '';
+
+          # ── the webview host ────────────────────────────────────────────
+          #
+          # src/webhost, configured ON ITS OWN. It is a Qt-only project -- no
+          # liblogos, no SDK, no Qt host runtime -- and building it that way is
+          # what keeps Chromium out of everything else here: `cli` and `ctl` are
+          # byte-for-byte what they are today, and a host that wants pages adds
+          # this one output.
+          #
+          # wrapQtAppsHook, not the NoGui one every other output uses. A
+          # WebEngine binary needs QTWEBENGINEPROCESS_PATH and the resource and
+          # locale directories in its environment, and the GUI hook is what
+          # supplies them; without it the helper starts and then dies looking
+          # for QtWebEngineProcess.
+          #
+          # Not built for Windows: the backend that spawns it is POSIX (see
+          # src/web/webhost_view.cpp), so a PE here would be a binary nothing
+          # could launch.
+          webhost = pkgs.stdenv.mkDerivation {
+            pname = "${pname}-webhost";
+            inherit version meta;
+
+            src = ./src/webhost;
+
+            nativeBuildInputs = [
+              pkgs.cmake
+              pkgs.ninja
+              pkgs.qt6.wrapQtAppsHook
+            ];
+
+            buildInputs = [
+              pkgs.qt6.qtbase
+              pkgs.qt6.qtdeclarative   # QtWebEngineQuick's own dependency
+              pkgs.qt6.qtwebengine
+              pkgs.qt6.qtwebchannel
+            ];
+
+            cmakeFlags = [ "-GNinja" ];
+          };
+
+          # ── a modules directory holding one `web` module ─────────────────
+          #
+          # js_counter: a manifest, a page, and the SDK's browser bundle beside
+          # it. Laid out exactly as lgpm installs a package, because that is
+          # what discovery scans -- `main` resolves to an .html document, which
+          # is the whole of what stamps the module `format = "web"`.
+          #
+          #     logoscore -D --modules-dir <this>/modules --container web
+          #     logoscore load-module js_counter
+          #     logoscore call js_counter add 1 2      -> 3
+          #
+          # An OUTPUT rather than a test-only file because it is the smallest
+          # complete example of the thing this container exists for, and because
+          # the doc-tests and a human debugging a backend want the same tree.
+          webFixture = pkgs.runCommand "${pname}-web-fixture-${version}"
+            { inherit meta; }
+            ''
+              mkdir -p $out/modules/js_counter
+              cp ${./tests/fixtures/web/js_counter}/manifest.json $out/modules/js_counter/
+              cp ${./tests/fixtures/web/js_counter}/index.html    $out/modules/js_counter/
+              # The IIFE build, because a page loaded from file:// cannot use an
+              # ES module import without a server to resolve it from.
+              cp ${logos-js-sdk.packages.${system}.web-bundle}/dist/logos-web.js \
+                 $out/modules/js_counter/
             '';
 
           # Build the logosctl binary against logos-liblogos
@@ -941,6 +1012,15 @@ ${pkgs.lib.optionalString withPkgModules ''
             desktopFile = ./assets/logoscore.desktop;
             icon = ./assets/logoscore.png;
           };
+
+          # The page host `--container web` spawns. Point the daemon at it with
+          # LOGOSCORE_WEBHOST=<this>/bin/logoscore-webhost, or ship it in bin/
+          # beside the daemon, which is where the backend looks by default.
+          webhost = webhost;
+
+          # A modules directory with one `web` module in it, to point the daemon
+          # above at. See webFixture.
+          web-fixture = webFixture;
 
           ctl = logosctlCli;
           ctl-bundle-dir = dirBundler binCtlPort;

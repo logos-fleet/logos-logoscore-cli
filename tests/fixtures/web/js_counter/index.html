@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>js_counter</title>
+  <!--
+    THE FIRST LOGOS MODULE THAT IS A PAGE.
+
+    There is no C++ in it, no generated glue and no build step beyond copying
+    these two files next to the SDK bundle: what makes this a module is that it
+    answers the web transport's Methods and Call messages, and logos-js-sdk's
+    WebProvider is what does that. The Web container opens the page, asks it for
+    its contract, and publishes whatever comes back under the name the package
+    manifest owns.
+  -->
+  <script src="logos-web.js"></script>
+</head>
+<body>
+<script>
+(async function () {
+  // The host hands the page its channel. `window.logosChannelReady` is
+  // logoscore-webhost's contract -- a Promise of the five-method channel shape
+  // in logos-js-sdk's README -- and it is deliberately the ONLY host-specific
+  // thing here: swap the webview for a MessagePort or a worker and only this
+  // line changes.
+  const channel = await window.logosChannelReady;
+
+  let count = 0;
+  const provider = new LogosWeb.WebProvider('js_counter');
+
+  provider.register({
+    handlers: {
+      // The acceptance criterion's own method: add(1, 2) is 3.
+      // Numbers arrive as numbers over the wire; Number() is for the operator
+      // who types `logoscore call js_counter add 1 2`, where they are strings.
+      add: (a, b) => Number(a) + Number(b),
+
+      // State, to prove the page is one live module across calls rather than a
+      // function evaluated fresh each time.
+      increment: (by) => {
+        count += Number(by === undefined ? 1 : by);
+        provider.emit('counted', count);
+        return count;
+      },
+      value: () => count,
+
+      // A handler that returns a Promise, because the provider allows it and a
+      // page's real work (fetch, IndexedDB, crypto) is asynchronous.
+      later: (text) => new Promise((resolve) => setTimeout(() => resolve(String(text)), 10)),
+    },
+    events: ['counted'],
+
+    // The credential the core minted for this module, relayed across the
+    // channel by WebModuleGlue. Saving it SHUTS THE DOOR: until one is saved a
+    // WebProvider answers anyone, and from here on a call must carry this
+    // token. That is the page half of ADR 0005 -- the module validates inside
+    // the webview, not only in the host.
+    onToken: (moduleName, token) => provider.saveToken(moduleName, token),
+  });
+
+  provider.attach(channel);
+})();
+</script>
+</body>
+</html>

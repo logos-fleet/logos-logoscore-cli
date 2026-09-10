@@ -20,6 +20,8 @@
 #include <token_manager.h>
 #include "../core_service/core_service_impl.h"
 
+#include "web/webhost_view.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QSocketNotifier>
@@ -519,6 +521,25 @@ int Daemon::start(int argc, char* argv[],
     //      Empty => NULL, which the runtime reads as "auto".
     logos_core_set_container_policy(
         cfg.container.empty() ? nullptr : cfg.container.c_str());
+
+    // 4a3. `--container web` is the one policy that also needs this PROCESS to
+    //      have somewhere to run a page. Installed here, next to the assertion
+    //      it belongs to, and only then: every other logoscore invocation must
+    //      not pay for a browser it never opens, so the backend is not wired in
+    //      by default and the webview host is a separate binary this one
+    //      spawns.
+    //
+    //      A failure is reported and not fatal. The daemon is perfectly usable
+    //      for everything else, and a `web` module then reports the missing
+    //      bridge BY NAME at load -- which points at the host, where the
+    //      problem is, rather than at the artifact.
+    if (cfg.container == "web") {
+        std::string whyNot;
+        if (!logosctl::web::installWebhostBackend({}, &whyNot))
+            fprintf(stderr,
+                    "Warning: --container web, but no webview host is available: %s\n",
+                    whyNot.c_str());
+    }
 
     // 4b. Install the access policy before any module loads. Empty =>
     //     NULL (clear). Runtime side is currently a no-op.

@@ -629,6 +629,83 @@ Daemon startup options:
                                  See "Access policy" below.
 ```
 
+#### `--container`: which container a module must run in
+
+An **assertion**, not a switch. Which container runs a module is decided by its
+**artifact** — a Bare module image runs in-process in the Native container, a Qt
+plugin runs in a subprocess host, a `web` variant (a package whose `main` is an
+`.html` document) runs in a webview in the Web container — and no flag turns one
+into another. `--container inproc` therefore means "every module here must be a
+Bare module", and a Qt plugin under it is refused rather than quietly
+subprocessed. That is what lets a CI job assert which container actually ran the
+thing.
+
+```
+      --container <auto|inproc|subprocess|web>
+```
+
+`auto` (the default) asserts nothing.
+
+##### Running a `web` module
+
+`--container web` additionally needs this process to have somewhere to run a
+page. It does not: `logoscore` links no browser, deliberately — a headless CLI
+should not carry Chromium to run modules that are not pages. The page runs in a
+**separate `logoscore-webhost` process**, which the daemon starts per module and
+speaks the web transport to over a loopback socket. That separation is also what
+makes a dead page survivable: the host sees the socket end, marks the module
+unloaded and keeps running.
+
+```bash
+# The page host is a nix output of its own.
+nix build github:logos-co/logos-logoscore-cli#webhost
+
+# A modules directory with one `web` module in it, for trying this out.
+nix build github:logos-co/logos-logoscore-cli#web-fixture -o fixture
+
+LOGOSCORE_WEBHOST=./result/bin/logoscore-webhost \
+  logoscore -D --modules-dir ./fixture/modules --container web
+
+logoscore load-module js_counter
+logoscore call js_counter add 1 2          # -> {"result":3,...}
+logoscore watch js_counter --event counted &
+logoscore call js_counter increment 7      # -> the subscriber sees counted(7)
+logoscore stats                            # -> js_counter, with the page host's pid
+```
+
+`LOGOSCORE_WEBHOST` names the binary. Without it the daemon looks for
+`logoscore-webhost` beside itself, which is where a build with
+`-DLOGOSCORE_WITH_WEBENGINE=ON` puts it; with neither, a `web` module reports
+the missing bridge by name at load and nothing else changes.
+
+The page host runs offscreen unless `QT_QPA_PLATFORM` is already set, so
+exporting `QT_QPA_PLATFORM=cocoa` (or leaving it at your desktop's default) is
+how you watch a page you are debugging. Its JavaScript console goes to the
+daemon's stderr.
+
+**What a module page has to do.** Nothing host-specific but one line: the host
+hands it `window.logosChannelReady`, a Promise of a
+[logos-js-sdk](https://github.com/logos-co/logos-js-sdk) channel, and the
+browser build of the SDK does the rest.
+
+```html
+<script src="logos-web.js"></script>
+<script>
+(async function () {
+  const channel = await window.logosChannelReady;
+  const provider = new LogosWeb.WebProvider('js_counter');
+  provider.register({
+    handlers: { add: (a, b) => Number(a) + Number(b) },
+    events: ['counted'],
+    // The credential the core minted for this module. Saving it shuts the
+    // door: from here on a call must carry it.
+    onToken: (moduleName, token) => provider.saveToken(moduleName, token),
+  });
+  provider.attach(channel);
+})();
+</script>
+```
+
 #### Access policy
 
 **Default: off.** Without `--access-policy`, any loaded module may call any
