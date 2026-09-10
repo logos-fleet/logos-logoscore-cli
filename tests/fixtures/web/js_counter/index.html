@@ -28,6 +28,13 @@
   let count = 0;
   const provider = new LogosWeb.WebProvider('js_counter');
 
+  // The page's own CONSUMER. Assigned below, once the provider has a peer to
+  // lend it; the handlers close over it and none of them can run before then.
+  let logos = null;
+
+  // Every event a native module has pushed at this page, newest last.
+  const heard = [];
+
   provider.register({
     handlers: {
       // The acceptance criterion's own method: add(1, 2) is 3.
@@ -47,8 +54,38 @@
       // A handler that returns a Promise, because the provider allows it and a
       // page's real work (fetch, IndexedDB, crypto) is asynchronous.
       later: (text) => new Promise((resolve) => setTimeout(() => resolve(String(text)), 10)),
+
+      // ── the page calling OUT ──────────────────────────────────────────────
+
+      // Call a native module, as this module. NO TOKEN IS PRESENTED and none is
+      // needed: the container routes this through the module's own LogosAPI,
+      // whose first call to a target runs the requestModule handshake against
+      // capability_module and presents what it minted. A page gets exactly the
+      // authority a native caller gets, granted by the same module.
+      callNative: (module, method, ...args) =>
+        logos.module(String(module)).call(String(method), ...args),
+
+      // The explicit form of the same handshake, for a page that wants the
+      // token itself. requestModule takes the ORIGIN and the target: on this
+      // wire a module's identity is the channel, but capability_module's own
+      // signature predates that and still asks who is calling.
+      grant: (module) =>
+        logos.module('capability_module')
+             .call('requestModule', provider.name, String(module)),
+
+      // What a native module emits, as seen from inside the page. Returns
+      // immediately: a Subscribe is fire-and-forget on this wire, and the
+      // module being watched may not even be loaded yet.
+      watchNative: (module, eventName) => {
+        logos.module(String(module)).on(String(eventName), (...data) => {
+          heard.push({ module: String(module), event: String(eventName), data });
+          provider.emit('heard', heard.length);
+        });
+        return true;
+      },
+      heardEvents: () => heard,
     },
-    events: ['counted'],
+    events: ['counted', 'heard'],
 
     // The credential the core minted for this module, relayed across the
     // channel by WebModuleGlue. Saving it SHUTS THE DOOR: until one is saved a
@@ -58,7 +95,17 @@
     onToken: (moduleName, token) => provider.saveToken(moduleName, token),
   });
 
-  provider.attach(channel);
+  // ATTACH LAST, as before -- a page that answered a call before it registered
+  // would report "unknown method" for a method it has.
+  //
+  // The client borrows the peer the provider is now serving on, because a
+  // module is not only something the host calls: this page asks
+  // capability_module for access, calls native modules and watches what they
+  // emit, and all of it goes back down the ONE channel the host handed it. A
+  // second WebPeer over that channel would install its single receiver and
+  // silently take every message from the first.
+  const peer = provider.attach(channel);
+  logos = new LogosWeb.WebClient('js_counter', { peer });
 })();
 </script>
 </body>

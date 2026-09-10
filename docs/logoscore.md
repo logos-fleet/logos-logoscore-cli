@@ -671,6 +671,13 @@ logoscore call js_counter add 1 2          # -> {"result":3,...}
 logoscore watch js_counter --event counted &
 logoscore call js_counter increment 7      # -> the subscriber sees counted(7)
 logoscore stats                            # -> js_counter, with the page host's pid
+
+# and the other direction: the page calling a NATIVE module, and watching one
+logoscore call js_counter callNative modules_state list_modules
+logoscore call js_counter grant modules_state          # -> a token capability_module minted
+logoscore call js_counter watchNative modules_state module_state_changed
+logoscore load-module js_other                         # any state change will do
+logoscore call js_counter heardEvents                  # -> what the page received
 ```
 
 `LOGOSCORE_WEBHOST` names the binary. Without it the daemon looks for
@@ -694,17 +701,46 @@ browser build of the SDK does the rest.
 (async function () {
   const channel = await window.logosChannelReady;
   const provider = new LogosWeb.WebProvider('js_counter');
+  let logos = null;                       // the page's own consumer, below
+
   provider.register({
-    handlers: { add: (a, b) => Number(a) + Number(b) },
+    handlers: {
+      add: (a, b) => Number(a) + Number(b),
+
+      // Calling a NATIVE module. No token is presented and none is needed: the
+      // container routes this through the module's own LogosAPI, whose first
+      // call to a target runs the requestModule handshake against
+      // capability_module and presents what it minted. A page gets exactly the
+      // authority a native caller gets, granted by the same module.
+      listModules: () => logos.module('modules_state').call('list_modules'),
+
+      // ... and watching one.
+      watchState: () => {
+        logos.module('modules_state').on('module_state_changed', (...d) => {
+          console.log('a module changed state:', d);
+        });
+        return true;
+      },
+    },
     events: ['counted'],
     // The credential the core minted for this module. Saving it shuts the
     // door: from here on a call must carry it.
     onToken: (moduleName, token) => provider.saveToken(moduleName, token),
   });
-  provider.attach(channel);
+
+  // ONE CHANNEL, BOTH DIRECTIONS. The host's calls arrive on it and the page's
+  // own calls leave on it, so the client borrows the peer the provider is
+  // serving on: two peers over one channel fight over its single receiver and
+  // the second silently takes every message from the first.
+  const peer = provider.attach(channel);
+  logos = new LogosWeb.WebClient('js_counter', { peer });
 })();
 </script>
 ```
+
+A page's outbound call is routed on the daemon's Qt main thread, and its wait
+for the page pumps that thread — so a page may call out **while** the host is
+calling in, which is the shape the first `requestModule` actually arrives in.
 
 #### Access policy
 
