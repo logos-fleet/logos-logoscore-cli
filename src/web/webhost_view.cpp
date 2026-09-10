@@ -15,8 +15,8 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
-#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -46,6 +46,17 @@ constexpr int kConnectTimeoutMs = 20000;
 
 // How long a terminated helper is given to exit before SIGKILL.
 constexpr int kExitGraceMs = 2000;
+
+// Kill a helper outright and REAP it. The waitpid is the point: without it the
+// daemon accumulates a zombie per page it ever gave up on, and this process is
+// long-lived by design.
+void killAndReap(pid_t pid)
+{
+    if (pid <= 0) return;
+    ::kill(pid, SIGKILL);
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+}
 
 // ── the channel ─────────────────────────────────────────────────────────────
 //
@@ -256,9 +267,7 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             if (m_pid > 0) {
-                ::kill(m_pid, SIGKILL);
-                int status = 0;
-                ::waitpid(m_pid, &status, 0);
+                killAndReap(m_pid);
                 m_pid = -1;
             }
         }
@@ -355,9 +364,7 @@ std::unique_ptr<LogosCore::WebModuleView> spawnView(const std::string& helper,
     if (ready <= 0) {
         spdlog::error("Web module {}: the webview host did not connect back "
                       "within {} ms", request.moduleName, kConnectTimeoutMs);
-        ::kill(pid, SIGKILL);
-        int status = 0;
-        ::waitpid(pid, &status, 0);
+        killAndReap(pid);
         ::close(listener);
         return nullptr;
     }
@@ -367,9 +374,7 @@ std::unique_ptr<LogosCore::WebModuleView> spawnView(const std::string& helper,
     if (conn < 0) {
         spdlog::error("Web module {}: accept() failed: {}",
                       request.moduleName, std::strerror(errno));
-        ::kill(pid, SIGKILL);
-        int status = 0;
-        ::waitpid(pid, &status, 0);
+        killAndReap(pid);
         return nullptr;
     }
 

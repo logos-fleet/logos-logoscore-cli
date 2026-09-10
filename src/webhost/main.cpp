@@ -173,8 +173,10 @@ const char* kChannelShim = R"JS(
 // daemon that spawned this process already collects.
 class LoggingPage : public QWebEnginePage {
 public:
-    LoggingPage(QWebEngineProfile* profile, QByteArray module)
-        : QWebEnginePage(profile), m_module(std::move(module)) {}
+    // `label` is what these lines call the page — see `pageLabel` in main(),
+    // which is the one place the fallback for a missing `--module` is chosen.
+    LoggingPage(QWebEngineProfile* profile, QByteArray label)
+        : QWebEnginePage(profile), m_label(std::move(label)) {}
 
 protected:
     void javaScriptConsoleMessage(JavaScriptConsoleMessageLevel level,
@@ -186,13 +188,13 @@ protected:
         const int i = static_cast<int>(level);
         fprintf(stderr, "logoscore-webhost: [%s] %s:%d %s (%s)\n",
                 (i >= 0 && i < 3) ? kLevels[i] : "?",
-                m_module.isEmpty() ? "page" : m_module.constData(),
+                m_label.constData(),
                 lineNumber, message.toUtf8().constData(),
                 sourceID.toUtf8().constData());
     }
 
 private:
-    QByteArray m_module;
+    QByteArray m_label;
 };
 
 QString qtResource(const QString& path)
@@ -239,6 +241,12 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    // What every log line below calls this page. `--module` is for diagnostics
+    // only and a caller may omit it, so the fallback is chosen once here rather
+    // than repeated at each fprintf. A QByteArray so the lambdas that use it
+    // can capture it by value and own their own copy.
+    const QByteArray pageLabel = module.isEmpty() ? QByteArrayLiteral("the page") : module;
+
     QTcpSocket socket;
     socket.connectToHost(QHostAddress::LocalHost, port);
     if (!socket.waitForConnected(10000)) {
@@ -262,7 +270,7 @@ int main(int argc, char** argv)
     // another module's page -- the storage half of the identity separation the
     // container gets structurally from one channel per view.
     QWebEngineProfile profile;
-    LoggingPage page(&profile, module);
+    LoggingPage page(&profile, pageLabel);
     page.setWebChannel(&channel);
 
     QWebEngineScript script;
@@ -298,20 +306,20 @@ int main(int argc, char** argv)
     // closes the socket, which is exactly the EOF the daemon's pump reports as
     // "the module lost its page".
     QObject::connect(&page, &QWebEnginePage::renderProcessTerminated,
-                     [&app, module](QWebEnginePage::RenderProcessTerminationStatus status,
-                                    int exitCode) {
+                     [&app, pageLabel](QWebEnginePage::RenderProcessTerminationStatus status,
+                                       int exitCode) {
                          fprintf(stderr,
                                  "logoscore-webhost: the renderer for %s terminated "
                                  "(status %d, exit %d)\n",
-                                 module.isEmpty() ? "the page" : module.constData(),
+                                 pageLabel.constData(),
                                  static_cast<int>(status), exitCode);
                          app.quit();
                      });
 
-    QObject::connect(&page, &QWebEnginePage::loadFinished, [module](bool ok) {
+    QObject::connect(&page, &QWebEnginePage::loadFinished, [pageLabel](bool ok) {
         if (!ok)
             fprintf(stderr, "logoscore-webhost: %s failed to load its entry document\n",
-                    module.isEmpty() ? "the page" : module.constData());
+                    pageLabel.constData());
     });
 
     page.load(QUrl::fromLocalFile(entry));

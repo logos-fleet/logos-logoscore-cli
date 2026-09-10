@@ -1016,7 +1016,7 @@ ${pkgs.lib.optionalString withPkgModules ''
           # The page host `--container web` spawns. Point the daemon at it with
           # LOGOSCORE_WEBHOST=<this>/bin/logoscore-webhost, or ship it in bin/
           # beside the daemon, which is where the backend looks by default.
-          webhost = webhost;
+          inherit webhost;
 
           # A modules directory with one `web` module in it, to point the daemon
           # above at. See webFixture.
