@@ -690,6 +690,55 @@ exporting `QT_QPA_PLATFORM=cocoa` (or leaving it at your desktop's default) is
 how you watch a page you are debugging. Its JavaScript console goes to the
 daemon's stderr.
 
+##### When a page dies, and what happens next
+
+Three things end a `web` module, and all three reach the daemon the same way —
+the page host's socket closes:
+
+| what happened | who notices |
+|---|---|
+| the renderer crashed | `logoscore-webhost`, which quits |
+| the page **closed its channel** | the shim, which tells the host, which quits |
+| the page host itself was killed | the daemon's own pump, at EOF |
+
+The middle one is the interesting one, and it is how a compiled `web` variant
+reports a **panic**. A Wasm host runs the module in a Web Worker; a trap — a
+Rust panic, an `abort()`, an out-of-bounds — kills that Worker and leaves the
+page standing, so the page closes its channel and says why on the console. The
+module is reported dead at once instead of after a 30-second introspection
+timeout, and the page's own view is never taken down by it.
+
+```
+logoscore-webhost: [error] bare_counter:0 [logos-wasm bare_counter] the image
+                   trapped: RuntimeError: unreachable (file:///...)
+logoscore-webhost: bare_counter closed its channel; it is no longer serving
+```
+
+However it died, the module goes to `error` on the lifecycle feed with "module
+exited without being asked to", the other modules are untouched, and
+`logoscore load-module` brings it back.
+
+**Or the host brings it back for you.** `LOGOS_SUPERVISION` sets liblogos's
+supervision policy — `max[,windowMs[,backoffMs]]` — and a module that dies
+without being asked to is loaded again, up to `max` times inside the window:
+
+```bash
+LOGOS_SUPERVISION=3 LOGOSCORE_WEBHOST=./result/bin/logoscore-webhost \
+  logoscore -D --modules-dir ./fixture/modules --container web
+```
+
+```
+[warning] Module bare_counter exited without being asked to; loading it again
+          in 500 ms (restart 1 of 3)
+```
+
+Past the budget it is left down and the log says so: a module that will not stay
+up needs an operator, not another restart. Loading or unloading it by hand
+re-arms the budget. It is **off by default**, and that is deliberate — a module
+whose state died with it must not come back pretending otherwise. A Wasm host
+keeps no state outside its own linear memory, which is what makes a fresh image
+a complete recovery rather than a guess.
+
 **What a module page has to do.** Nothing host-specific but one line: the host
 hands it `window.logosChannelReady`, a Promise of a
 [logos-js-sdk](https://github.com/logos-co/logos-js-sdk) channel, and the
