@@ -76,6 +76,23 @@ public slots:
     // QWebChannel exposes both and this reads as what it is: an inbox.
     void toHost(const QString& text) { emit fromPage(text); }
 
+    // Called BY THE PAGE when it closes its end of the channel.
+    //
+    // A PAGE CLOSING ITS CHANNEL IS A MODULE FAILURE, and this slot is what
+    // makes it one. Until it existed the shim's close() only flipped a flag
+    // inside the page: the host kept the socket open, the container went on
+    // believing the module was there, and the next call into it burned the full
+    // introspection timeout before failing for the wrong reason.
+    //
+    // Two things close a channel, and both are the page saying it can no longer
+    // serve: a wasm image that trapped (the `web` variant's loader page reports
+    // a Rust panic exactly this way -- slice 26) and logos-js-sdk's own peer
+    // failing a connection it cannot decode. So the answer to both is the same,
+    // and it is the answer this process already has for a dead renderer: quit,
+    // which closes the socket, which is the EOF the daemon's pump reports as
+    // "the module lost its page".
+    void closed() { emit pageClosed(); }
+
     // Called BY THE PAGE, once, when its end of the channel is connected.
     void ready()
     {
@@ -89,6 +106,7 @@ public slots:
 signals:
     void toPage(const QString& text);
     void fromPage(const QString& text);
+    void pageClosed();
 
 private:
     bool m_pageReady = false;
@@ -138,7 +156,14 @@ const char* kChannelShim = R"JS(
       pending = [];
       queued.forEach(deliver);
     },
-    close: function () { open = false; },
+    close: function () {
+      if (!open) return;
+      open = false;
+      // TELL THE HOST. A channel the page has closed is a module that has
+      // stopped serving, and the host cannot see that from its own end: the
+      // socket is still up and the page is still loaded. See Bridge::closed().
+      if (bridge) bridge.closed();
+    },
     isOpen: function () { return open; }
   };
 
@@ -301,6 +326,16 @@ int main(int argc, char** argv)
 
     // The daemon closing the socket is how a module is unloaded.
     QObject::connect(&socket, &QTcpSocket::disconnected, &app, &QGuiApplication::quit);
+
+    // The page closing its channel is how a module reports that it died. Same
+    // exit as a dead renderer, for the same reason: the daemon learns from the
+    // socket, and it is the only thing it can learn from.
+    QObject::connect(&bridge, &Bridge::pageClosed, [&app, pageLabel]() {
+        fprintf(stderr,
+                "logoscore-webhost: %s closed its channel; it is no longer "
+                "serving\n", pageLabel.constData());
+        app.quit();
+    });
 
     // A renderer crash is the page's death, and the host has to see it. Quitting
     // closes the socket, which is exactly the EOF the daemon's pump reports as
