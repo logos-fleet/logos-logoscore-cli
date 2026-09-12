@@ -660,7 +660,9 @@ unloaded and keeps running.
 # The page host is a nix output of its own.
 nix build github:logos-co/logos-logoscore-cli#webhost
 
-# A modules directory with one `web` module in it, for trying this out.
+# A modules directory with two `web` modules in it, for trying this out:
+# js_counter, which is the module, and js_other, which is the rest of the world
+# (loading it is the state change the lines further down wait for).
 nix build github:logos-co/logos-logoscore-cli#web-fixture -o fixture
 
 LOGOSCORE_WEBHOST=./result/bin/logoscore-webhost \
@@ -684,6 +686,19 @@ logoscore call js_counter heardEvents                  # -> what the page receiv
 `logoscore-webhost` beside itself, which is where a build with
 `-DLOGOSCORE_WITH_WEBENGINE=ON` puts it; with neither, a `web` module reports
 the missing bridge by name at load and nothing else changes.
+
+**That run is a check.** `tests/web-container-suite.sh` is the sequence above
+with assertions on it, and `checks.<system>.web-container` runs it against the
+two outputs named here — so the Web container is exercised on every platform CI
+builds this repo on, not only where somebody remembered to try it:
+
+```bash
+nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).web-container -L
+```
+
+Its twin for the other container is `logos-test-modules`'
+`ipc-new-api-inproc-tests`, which runs the IPC suite against Bare modules under
+`--container inproc`.
 
 The page host runs offscreen unless `QT_QPA_PLATFORM` is already set, so
 exporting `QT_QPA_PLATFORM=cocoa` (or leaving it at your desktop's default) is

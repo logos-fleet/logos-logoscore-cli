@@ -1,0 +1,10 @@
+{
+  "name": "js_other",
+  "version": "1.0.0",
+  "type": "core",
+  "category": "misc",
+  "description": "A second page in the fixture directory. It exists to be loaded: loading it is a module state change, which is what a page watching modules_state is waiting for.",
+  "author": "Logos Core Team",
+  "main": "index.html",
+  "dependencies": []
+}

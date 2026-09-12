@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>js_other</title>
+  <!--
+    THE SECOND PAGE.
+
+    js_counter is the module; this one is the rest of the world. Two things
+    need a second web module to be observable at all, and neither is about
+    what this page computes:
+
+      - a page watching `modules_state.module_state_changed` needs SOMETHING
+        to change state, and loading this is the smallest such event;
+      - "a dead page takes only itself down" is not an assertion until a
+        second page is standing next to the one that dies.
+
+    So it answers one method and keeps a count of how often it was asked,
+    which is enough to tell "still serving" from "answered once and stopped".
+  -->
+  <script src="logos-web.js"></script>
+</head>
+<body>
+<script>
+(async function () {
+  const channel = await window.logosChannelReady;
+
+  let asked = 0;
+  const provider = new LogosWeb.WebProvider('js_other');
+
+  provider.register({
+    handlers: {
+      ping: () => { asked += 1; return 'pong'; },
+      asked: () => asked,
+    },
+    events: [],
+    onToken: (moduleName, token) => provider.saveToken(moduleName, token),
+  });
+
+  provider.attach(channel);
+})();
+</script>
+</body>
+</html>

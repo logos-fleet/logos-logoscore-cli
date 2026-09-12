@@ -281,7 +281,7 @@
             cmakeFlags = [ "-GNinja" ];
           };
 
-          # ── a modules directory holding one `web` module ─────────────────
+          # ── a modules directory holding `web` modules ────────────────────
           #
           # js_counter: a manifest, a page, and the SDK's browser bundle beside
           # it. Laid out exactly as lgpm installs a package, because that is
@@ -292,20 +292,26 @@
           #     logoscore load-module js_counter
           #     logoscore call js_counter add 1 2      -> 3
           #
+          # js_other is the rest of the world: a second page, so that "a page
+          # heard a native module's event" has something to make an event and
+          # "a dead page takes only itself down" has a survivor. The docs have
+          # named it since the page -> core direction landed; it ships here so
+          # those lines can be pasted.
+          #
           # An OUTPUT rather than a test-only file because it is the smallest
           # complete example of the thing this container exists for, and because
           # the doc-tests and a human debugging a backend want the same tree.
           webFixture = pkgs.runCommand "${pname}-web-fixture-${version}"
             { inherit meta; }
-            ''
-              mkdir -p $out/modules/js_counter
-              cp ${./tests/fixtures/web/js_counter}/manifest.json $out/modules/js_counter/
-              cp ${./tests/fixtures/web/js_counter}/index.html    $out/modules/js_counter/
+            (pkgs.lib.concatMapStrings (name: ''
+              mkdir -p $out/modules/${name}
+              cp ${./tests/fixtures/web}/${name}/manifest.json $out/modules/${name}/
+              cp ${./tests/fixtures/web}/${name}/index.html    $out/modules/${name}/
               # The IIFE build, because a page loaded from file:// cannot use an
               # ES module import without a server to resolve it from.
               cp ${logos-js-sdk.packages.${system}.web-bundle}/dist/logos-web.js \
-                 $out/modules/js_counter/
-            '';
+                 $out/modules/${name}/
+            '') [ "js_counter" "js_other" ]);
 
           # Build the logosctl binary against logos-liblogos
           build = pkgs.stdenv.mkDerivation {
@@ -1132,6 +1138,61 @@ ${pkgs.lib.optionalString withPkgModules ''
             appPkg = self.packages.${system}.default;
             negativeControl = true;
           };
+
+          # ── the Web container, end to end ────────────────────────────────
+          #
+          # The other half of "CI exercises both containers on Linux and macOS
+          # through logoscore" (PRD user story 44). The `--container inproc`
+          # half is logos-test-modules' `ipc-new-api-inproc-tests`; this is the
+          # `--container web` one, and it lives here because the page host and
+          # the fixture are outputs of this repo.
+          #
+          # A real Qt WebEngine process starts and a real page serves a real
+          # module over the web transport. There is no stand-in for the
+          # container anywhere in it -- the assertions in liblogos' own suite
+          # drive a page stand-in over a channel pair, which is the right shape
+          # for a unit test and cannot tell you that a browser started.
+          #
+          # `checks` is only ever evaluated for the four POSIX systems (see
+          # forAllSystems above), which is the same reason `webhost` itself has
+          # no Windows build.
+          web-container = pkgs.runCommand "logos-logoscore-cli-web-container" {
+            nativeBuildInputs = [
+              self.packages.${system}.cli
+              self.packages.${system}.webhost
+              pkgs.jq
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.qt6.qtbase ];
+          } ''
+            export QT_QPA_PLATFORM=offscreen
+            export QT_FORCE_STDERR_LOGGING=1
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
+            ''}
+            # HOME is not set in a build, and Chromium wants somewhere to put
+            # its profile. Without this the page host dies before the page.
+            export HOME=$TMPDIR
+            # Chromium's OWN sandbox, inside nix's. It cannot start in a build:
+            # on darwin the renderer dies at
+            #   FATAL:process_main.cpp: Check failed:
+            #   seatbelt.server->InitializeSandbox()
+            # and on Linux a build with the nix sandbox on has no user
+            # namespaces to make one from. Nothing is given up by turning it
+            # off here that the build is not already giving: the page is a
+            # fixture from this repo, and the process it runs in is already
+            # confined by the builder.
+            export QTWEBENGINE_DISABLE_SANDBOX=1
+            mkdir -p $out
+
+            bash ${./tests/web-container-suite.sh} \
+              ${self.packages.${system}.cli}/bin/logoscore \
+              ${self.packages.${system}.webhost}/bin/logoscore-webhost \
+              ${self.packages.${system}.web-fixture}/modules \
+              2>&1 | tee $out/web-container-results.txt
+
+            # tee is last in the pipeline, so the suite's own exit status is in
+            # PIPESTATUS; without this a failing suite would be a green check.
+            [ "''${PIPESTATUS[0]}" -eq 0 ] || exit 1
+          '';
 
           # Aggregate. `nix build .#checks.<sys>.tests` still works and now
           # covers both tools; nix builds the two dependencies concurrently.
