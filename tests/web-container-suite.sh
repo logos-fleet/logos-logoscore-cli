@@ -55,7 +55,10 @@ DAEMON_PID=""
 WATCH_PID=""
 
 cleanup() {
-  [[ -n "$WATCH_PID" ]] && { kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; }
+  if [[ -n "$WATCH_PID" ]]; then
+    kill "$WATCH_PID" 2>/dev/null
+    wait "$WATCH_PID" 2>/dev/null
+  fi
   if [[ -n "$DAEMON_PID" ]]; then
     "$LOGOSCORE" stop >/dev/null 2>&1
     kill "$DAEMON_PID" 2>/dev/null
@@ -65,6 +68,23 @@ cleanup() {
 trap cleanup EXIT
 
 call() { timeout "$CALL_TIMEOUT" "$LOGOSCORE" "$@" 2>&1; }
+
+# Re-asks a check function until it is satisfied, up to <tries> times half a
+# second apart. The function prints the value it looked at and returns 0 when
+# that value satisfies it; $POLLED keeps the last one.
+#
+# One helper rather than a loop per step because the alternative -- which this
+# was -- writes the wait condition twice, once to break out of the loop and
+# once to decide the assertion, and the two copies drift.
+POLLED=""
+poll() {
+  local tries="$1" check="$2"
+  for _ in $(seq 1 "$tries"); do
+    POLLED="$("$check")" && return 0
+    sleep 0.5
+  done
+  return 1
+}
 
 # ── the daemon ───────────────────────────────────────────────────────────────
 echo "Web container suite"
@@ -118,13 +138,15 @@ timeout "$CALL_TIMEOUT" "$LOGOSCORE" watch js_counter --event counted >"$WATCH_L
 WATCH_PID=$!
 sleep 3
 call call js_counter increment 5 >/dev/null
-heard=""
-for _ in $(seq 1 30); do
-  heard="$(jq -r 'select(.event == "counted") | .data.arg0' <"$WATCH_LOG" 2>/dev/null | tail -1)"
-  [[ -n "$heard" ]] && break
-  sleep 0.5
-done
-expect "a native watcher receives the page's event" "12" "$heard"
+# The payload of the last `counted` line the watcher has written, if any.
+counted_payload() {
+  local seen
+  seen="$(jq -r 'select(.event == "counted") | .data.arg0' <"$WATCH_LOG" 2>/dev/null | tail -1)"
+  printf '%s' "$seen"
+  [[ -n "$seen" ]]
+}
+poll 30 counted_payload
+expect "a native watcher receives the page's event" "12" "$POLLED"
 kill "$WATCH_PID" 2>/dev/null; wait "$WATCH_PID" 2>/dev/null; WATCH_PID=""
 
 # 6. The page calling OUT, as the module. The container grants nothing of its
@@ -152,16 +174,17 @@ fi
 call call js_counter watchNative modules_state module_state_changed >/dev/null
 expect "load-module js_other" "ok" \
   "$(call load-module js_other | jq -r '.status // "no-status"')"
-count=0
-for _ in $(seq 1 60); do
-  count="$(call call js_counter heardEvents | jq -r '.result | length')"
-  [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] && break
-  sleep 0.5
-done
-if [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
-  ok "the page heard a native module's event ($count of them)"
+# How many events the page's own JS handler has recorded, once it has any.
+heard_event_count() {
+  local n
+  n="$(call call js_counter heardEvents | jq -r '.result | length')"
+  printf '%s' "$n"
+  [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]]
+}
+if poll 60 heard_event_count; then
+  ok "the page heard a native module's event ($POLLED of them)"
 else
-  bad "the page heard nothing from modules_state -- heardEvents is [$count]"
+  bad "the page heard nothing from modules_state -- heardEvents is [$POLLED]"
 fi
 
 # 9. A dead page. Killing the process that IS the module is the honest version
@@ -171,16 +194,17 @@ fi
 page_pid="$(call stats | jq -r '.[] | select(.name == "js_counter") | .pid')"
 if [[ "$page_pid" =~ ^[0-9]+$ ]]; then
   kill -9 "$page_pid" 2>/dev/null
-  state=""
-  for _ in $(seq 1 60); do
+  # js_counter's reported status, once the daemon has stopped calling it loaded.
+  counter_status() {
+    local state
     state="$(call status | jq -r '.modules[] | select(.name == "js_counter") | .status')"
-    [[ -n "$state" && "$state" != "loaded" ]] && break
-    sleep 0.5
-  done
-  if [[ -n "$state" && "$state" != "loaded" ]]; then
-    ok "a killed page is reported as no longer running (status: $state)"
+    printf '%s' "$state"
+    [[ -n "$state" && "$state" != "loaded" ]]
+  }
+  if poll 60 counter_status; then
+    ok "a killed page is reported as no longer running (status: $POLLED)"
   else
-    bad "a killed page is still reported [$state]"
+    bad "a killed page is still reported [$POLLED]"
   fi
 
   expect "the other page kept answering" "pong" \
