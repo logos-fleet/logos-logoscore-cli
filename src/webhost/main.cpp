@@ -39,6 +39,7 @@
 #include <QUrl>
 #include <QWebChannel>
 #include <QWebEnginePage>
+#include <QDir>
 #include <QWebEngineProfile>
 #include <QWebEngineScript>
 #include <QWebEngineScriptCollection>
@@ -252,15 +253,22 @@ int main(int argc, char** argv)
     QCommandLineOption moduleOpt(QStringLiteral("module"),
                                  QStringLiteral("Module name, for log lines only."),
                                  QStringLiteral("name"));
+    QCommandLineOption storageOpt(
+        QStringLiteral("storage"),
+        QStringLiteral("Where this module's page may store data across runs. "
+                       "Omit it and the page runs off the record."),
+        QStringLiteral("dir"));
     parser.addOption(entryOpt);
     parser.addOption(portOpt);
     parser.addOption(moduleOpt);
+    parser.addOption(storageOpt);
     parser.addHelpOption();
     parser.process(app);
 
     const QString entry = parser.value(entryOpt);
     const quint16 port = static_cast<quint16>(parser.value(portOpt).toUShort());
     const QByteArray module = parser.value(moduleOpt).toUtf8();
+    const QString storageDir = parser.value(storageOpt);
     if (entry.isEmpty() || port == 0) {
         fprintf(stderr, "logoscore-webhost: --entry and --port are required\n");
         return 2;
@@ -290,11 +298,42 @@ int main(int argc, char** argv)
     QWebChannel channel;
     channel.registerObject(QStringLiteral("logos"), &bridge);
 
-    // A profile of its own, off the record. Two web modules are two processes
-    // and therefore two profiles, so nothing a page stores is reachable from
-    // another module's page -- the storage half of the identity separation the
-    // container gets structurally from one channel per view.
-    QWebEngineProfile profile;
+    // A PROFILE OF ITS OWN, and -- when the daemon gave us somewhere to put it
+    // -- a PERSISTENT one.
+    //
+    // Two web modules are two processes and therefore two profiles, so nothing
+    // a page stores is reachable from another module's page: that is the
+    // storage half of the identity separation the container gets structurally
+    // from one channel per view, and it survives this change because the
+    // directory below is the module's own instance-persistence directory.
+    //
+    // Persistence is not optional for a real module, and the way it failed is
+    // the problem. A default-constructed QWebEngineProfile is OFF THE RECORD,
+    // which for a wasm module means IDBFS mounts, `commit()` pushes into
+    // IndexedDB, the push SUCCEEDS -- and the whole database is in memory and
+    // dies with this process. Measured with the keystore's `web` variant: it
+    // created a key, encrypted it, reported the write durable, and a fresh
+    // daemon listed no accounts. Nothing raised an error at any point, which is
+    // exactly the failure this slice's storage barrier exists to remove one
+    // level down.
+    //
+    // The storage NAME is the module's, and the PATH is the directory the host
+    // already assigns that module. Qt keys an off-the-record profile off the
+    // empty name, so the name is what makes it persistent at all; the path is
+    // what keeps it beside the module's other state instead of in a shared
+    // application-data directory.
+    const bool offTheRecord = storageDir.isEmpty();
+    QWebEngineProfile profile(offTheRecord ? QString()
+                                           : QString::fromUtf8(pageLabel));
+    if (!offTheRecord) {
+        QDir().mkpath(storageDir);
+        profile.setPersistentStoragePath(storageDir);
+        profile.setCachePath(storageDir + QStringLiteral("/cache"));
+        profile.setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
+    }
+    fprintf(stderr, "logoscore-webhost: %s storage: %s\n", pageLabel.constData(),
+            offTheRecord ? "off the record (the daemon named no persistence path)"
+                         : qPrintable(storageDir));
     LoggingPage page(&profile, pageLabel);
     page.setWebChannel(&channel);
 
