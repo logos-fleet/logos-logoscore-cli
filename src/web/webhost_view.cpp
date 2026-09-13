@@ -331,6 +331,16 @@ std::unique_ptr<LogosCore::WebModuleView> spawnView(const std::string& helper,
         "--port", portArg,
         "--module", request.moduleName,
     };
+    // WHERE THE PAGE'S STORAGE GOES. Without it the webhost runs off the
+    // record and the browser keeps IndexedDB in memory, so a module's
+    // `commit()` succeeds, reads back for the life of the page and has nothing
+    // to show after a restart. Omitted -- not passed empty -- when the host has
+    // no persistence base at all, which is the one case where off the record is
+    // the honest shape.
+    if (!request.storagePath.empty()) {
+        argvStore.emplace_back("--storage");
+        argvStore.emplace_back(request.storagePath);
+    }
     std::vector<char*> argv;
     argv.reserve(argvStore.size() + 1);
     for (auto& a : argvStore) argv.push_back(a.data());
