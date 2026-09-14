@@ -76,10 +76,20 @@ bool dispatchRejection(const nlohmann::json& v, CallFailure& out);
 // One method as the module describes itself through getPluginMethods.
 struct MethodInfo {
     std::string name;
-    // The DECLARED parameter types, spelled the way both provider flavours
-    // publish them: Qt type names ("QString", "int", "double", "bool",
-    // "QVariantList", "QVariantMap", "QByteArray", "QVariant"). `?T` and `any`
-    // publish as "QVariant", which is exactly the answer "no rule here".
+    // The DECLARED parameter types, verbatim in whatever VOCABULARY the module
+    // published them in. There are two, and they are not distinguishable from
+    // the string:
+    //   - Qt type names ("QString", "int", "double", "bool", "QVariantList",
+    //     "QVariantMap", "QByteArray", "QVariant") -- a handcrafted Qt plugin
+    //     answering from its QMetaObject, and logos-rust-sdk's generated
+    //     provider (lidl-gen's qt_type_name). `?T` and `any` land on
+    //     "QVariant", which is exactly the answer "no rule here".
+    //   - LIDL contract names ("tstr", "uint", "[Point]", "? tstr") -- the C++
+    //     cdylib backend, which publishes its contract rather than Qt's
+    //     spelling of it (lidl_gen_cdylib's lidlTypeToPublishedName).
+    // argumentMismatch never has to tell them apart: a name it does not know
+    // is silence, so the LIDL half is simply not judged. See the table in
+    // call_envelope.cpp for why widening it is not a free change.
     std::vector<std::string> paramTypes;
     // Whether the module published a parameter list at all. A method with no
     // parameters has none, and that is NOT the same as a module that does not

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <optional>
 #include <unistd.h>
 #include <unordered_set>
 
@@ -462,18 +463,37 @@ LogosList CoreServiceImpl::getModuleStats()
 
 namespace {
 
+// The DECLARED parameter types of one published method, or nullopt when the
+// module did not describe them usably — which is why MethodInfo carries
+// paramsPublished rather than inferring it from an empty list. "Takes no
+// parameters" and "did not say" are different answers and the caller acts on
+// only one of them.
+std::optional<std::vector<std::string>> publishedParamTypes(const nlohmann::json& method)
+{
+    // Absent because the method takes none — the shape both provider flavours
+    // emit for a zero-parameter method.
+    auto params = method.find("parameters");
+    if (params == method.end()) return std::vector<std::string>{};
+    if (!params->is_array()) return std::nullopt;
+
+    std::vector<std::string> types;
+    for (const auto& p : *params) {
+        auto t = p.is_object() ? p.find("type") : p.end();
+        // A parameter whose type is missing or not a string leaves the WHOLE
+        // list unusable: the positions have to line up with the arguments or
+        // the wrong one gets named.
+        if (t == p.end() || !t->is_string()) return std::nullopt;
+        types.push_back(t->get<std::string>());
+    }
+    return types;
+}
+
 // The interface a module says it exposes, via its own getPluginMethods.
 //
 // Only ever consulted to resolve the ambiguities the wire genuinely cannot
 // (see call_envelope.cpp), so the extra round-trip is paid on a null return and
 // nowhere else. Returns empty when introspection itself failed — the caller
 // must then not claim the method is missing, because it does not know.
-//
-// `parameters` is present only when the method HAS parameters (both provider
-// flavours omit the key otherwise), which is why paramsPublished is set from
-// the presence of a well-formed array rather than from its size: "no
-// parameters" and "did not say" are different answers and the caller acts on
-// only one of them.
 std::vector<core_service::MethodInfo> exposedMethods(LogosAPIClient* client,
                                                      const std::string& module)
 {
@@ -486,32 +506,16 @@ std::vector<core_service::MethodInfo> exposedMethods(LogosAPIClient* client,
     if (!err.ok() || !methods.is_array()) return out;
     for (const auto& m : methods) {
         core_service::MethodInfo info;
-        if (m.is_object()) {
+        if (m.is_string()) {
+            info.name = m.get<std::string>();   // a bare name says nothing about arguments
+        } else if (m.is_object()) {
             auto n = m.find("name");
             if (n == m.end() || !n->is_string()) continue;
             info.name = n->get<std::string>();
-            auto params = m.find("parameters");
-            if (params != m.end() && params->is_array()) {
-                info.paramsPublished = true;
-                for (const auto& p : *params) {
-                    auto t = p.is_object() ? p.find("type") : p.end();
-                    // A parameter whose type is missing or not a string leaves
-                    // the whole list unusable: the positions have to line up
-                    // with the arguments or the wrong one gets named.
-                    if (t == p.end() || !t->is_string()) {
-                        info.paramsPublished = false;
-                        info.paramTypes.clear();
-                        break;
-                    }
-                    info.paramTypes.push_back(t->get<std::string>());
-                }
-            } else if (params == m.end()) {
-                // Absent because the method takes none — the shape both
-                // flavours emit for a zero-parameter method.
+            if (auto types = publishedParamTypes(m)) {
+                info.paramTypes      = std::move(*types);
                 info.paramsPublished = true;
             }
-        } else if (m.is_string()) {
-            info.name = m.get<std::string>();   // a bare name says nothing about arguments
         } else {
             continue;
         }

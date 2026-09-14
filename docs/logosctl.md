@@ -394,7 +394,7 @@ strings are all expressible:
 | `@<file>` | the file's raw contents as a string | `@config.json` |
 | `true` / `false` | a boolean | `true` |
 | a whole DECIMAL number | an integer | `42`, `-7` |
-| a fractional DECIMAL number | a double | `3.14`, `1e5` |
+| a DECIMAL number with a fraction or exponent | a double | `3.14`, `1e5` |
 | anything else | a string | `hello`, `0x8ad0Fcf7…`, `inf` |
 
 `json:` and `str:` are the two explicit escapes, mirroring the convention used

@@ -24,6 +24,21 @@ bool isRejectionCode(const std::string& c)
 // accepts anything. So is "QByteArray" -- `bstr` rides a string OR the
 // canonical {"_bytes": ...} tag, so two shapes satisfy it and a third
 // (a number) is refused by the provider with the same sentence this would use.
+//
+// These are the QT spelling, which is what a handcrafted Qt plugin (from its
+// QMetaObject) and logos-rust-sdk's provider publish. The C++ cdylib backend
+// publishes LIDL CONTRACT names instead (lidl_gen_cdylib's
+// lidlTypeToPublishedName), and only its primitives -- "int", "uint", "bool" --
+// happen to collide with words above; "tstr", "bstr", "float64", "[T]",
+// "{K: V}" and "? T" are absent, so a cdylib module's string and container
+// parameters fall through to silence, the same answer any unrecognised name
+// gets. Teaching the table that half is a BEHAVIOUR change rather than a lookup
+// change -- calls that answer {"result": null, "status": "ok"} today would
+// start failing with exit code 4 -- so it wants its own integration case, not a
+// line added here. (The collisions are harmless where they are: `int` is 32-bit
+// in one vocabulary and 64-bit in the other, which matters to a reader that
+// reasons about RANGE and not to predicates that only separate a number from a
+// non-number. See plugin_introspect.cpp for what that ambiguity cost there.)
 struct DeclaredType {
     const char* qtName;
     const char* expected;                       // the word in the message

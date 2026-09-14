@@ -60,16 +60,14 @@ nlohmann::json scalar(const std::string& text)
     // rounded (echoUint 9007199254740993 came back 9007199254740992). stoull
     // covers the band above int64max; it is only tried for a non-negative
     // literal because stoull("-1") happily wraps to 18446744073709551615.
-    bool isInt = false;
-    long long intVal = 0;
+    // (`num` has at least one digit, or isDecimalNumber would have said no.)
     try {
         size_t pos = 0;
-        intVal = std::stoll(num, &pos);
-        isInt = (pos == num.size());
+        const long long intVal = std::stoll(num, &pos);
+        if (pos == num.size()) return intVal;
     } catch (...) {}
-    if (isInt) return intVal;
 
-    if (!num.empty() && num.front() != '-') {
+    if (num.front() != '-') {
         try {
             size_t pos = 0;
             const unsigned long long uintVal = std::stoull(num, &pos);
