@@ -938,7 +938,8 @@ carries which one, verbatim from the protocol's call-error vocabulary:
 `unauthorized`, plus the codes a provider that RAN and refused answers as its
 result rather than on the error channel: `dispatch_failed` (it refused the
 argument VALUES) and `invalid_args` (wrong argument COUNT). `unknown_method` is
-recognised too, ahead of any provider emitting it.
+recognised too, ahead of any provider emitting it. `argument_mismatch` is the
+one code `call` raises itself — see the `null` paragraph below.
 
 That in-band set is CLOSED, deliberately. A method may legitimately return a
 `{code, message, origin}` map of its own; matching the shape rather than the
@@ -952,9 +953,33 @@ code would turn its data into an error. Anything outside the set comes back as
 
 A result of `null` is **not** a failure. It is a value — an empty optional, or a
 method that returns nothing in particular — and reports `status: "ok"` with
-`"result": null`. The one case `null` cannot express is an unknown method name,
-which no provider distinguishes on the wire; `call` resolves that by asking the
-module for its method list, which is where `METHOD_NOT_FOUND` above comes from.
+`"result": null`. Two things `null` cannot express on its own, and `call`
+resolves both by asking the module for its own interface — one extra round-trip,
+paid on a null return and nowhere else:
+
+* **an unknown method name**, which no provider distinguishes on the wire. That
+  is where `METHOD_NOT_FOUND` above comes from.
+* **an argument the declared parameter cannot take.** The published parameter
+  types say so, and the envelope then reports `METHOD_FAILED` with
+  `error.code: "argument_mismatch"` — the one code in the set that no provider
+  ever said:
+
+```
+$ logosctl call keystore_module has_address 42 --json
+{"status":"error","code":"METHOD_FAILED","message":"Call to keystore_module.has_address failed (argument_mismatch: expected string at arg0, got number).","error":{"code":"argument_mismatch","message":"expected string at arg0, got number","origin":"keystore_module"}}
+```
+
+> **This changed.** Such a call used to reach the module, fail to match any
+> signature there, and come back `{"result": null, "status": "ok"}` — exit code
+> **0**, nothing logged by the daemon, and a script reading the exit code saw
+> success. It now exits **4**.
+
+The check is deliberately narrow, because a false positive would refuse a call
+that works: it speaks only when the module published a parameter list, the
+argument COUNT already agrees (a count is the provider's `invalid_args` to
+report), the declared type has an unambiguous JSON counterpart (`any` and every
+`?T` publish as `QVariant`, which accepts anything), and the value is not
+`null`. Anything else stays `status: "ok"`.
 
 **Timeout error (JSON):**
 ```

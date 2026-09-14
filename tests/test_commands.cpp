@@ -817,6 +817,29 @@ TEST_F(CommandTest, Call_TrimsWhitespaceForNumericCoercion)
     EXPECT_DOUBLE_EQ(mockClient.lastCallArgs[1].get<double>(), 1.5);
 }
 
+// A `0x`-hex argument is a STRING, all the way through the command.
+//
+// arg_coerce's own suite pins the inference; this pins the wiring -- that `call`
+// really routes a positional argument through it, so the address the user typed
+// is what the RPC carries. It was a double (7.9250088148318908e+47) and the
+// module answered {"result": null, "status": "ok"} to every method that names
+// an account.
+TEST_F(CommandTest, Call_HexArgumentReachesTheModuleAsAString)
+{
+    const std::string addr = "0x8ad0Fcf71D6FBD060BAfd45f5155b1e52d3591C5";
+    mockClient.callMethodResult = LogosMap{{"status", "ok"}, {"result", true}};
+    auto cmd = createCommand("call", mockClient, output);
+    captureOutput([&]() {
+        EXPECT_EQ(cmd->execute({"keystore_module", "has_address", addr, "0x1F", "inf"}), 0);
+    });
+    ASSERT_EQ(mockClient.lastCallArgs.size(), 3u);
+    for (const auto& a : mockClient.lastCallArgs)
+        EXPECT_TRUE(a.is_string()) << "arg reached the daemon as " << a.dump();
+    EXPECT_EQ(mockClient.lastCallArgs[0].get<std::string>(), addr);
+    EXPECT_EQ(mockClient.lastCallArgs[1].get<std::string>(), "0x1F");
+    EXPECT_EQ(mockClient.lastCallArgs[2].get<std::string>(), "inf");
+}
+
 // ── call: json: / str: argument prefixes ─────────────────────────────────────
 // Scalar coercion can only produce bool/int/double/string, so `json:<value>`
 // opts into JSON parsing (list / map / nested), `json:@file` parses file

@@ -1,7 +1,5 @@
 #include "call_envelope.h"
 
-#include <algorithm>
-
 namespace core_service {
 namespace {
 
@@ -19,7 +17,67 @@ bool isRejectionCode(const std::string& c)
     return false;
 }
 
+// What a declared parameter type accepts, as a JSON predicate.
+//
+// Only the types whose JSON counterpart is UNAMBIGUOUS appear here. "QVariant"
+// is deliberately absent: it is what `any` and every `?T` publish as, and it
+// accepts anything. So is "QByteArray" -- `bstr` rides a string OR the
+// canonical {"_bytes": ...} tag, so two shapes satisfy it and a third
+// (a number) is refused by the provider with the same sentence this would use.
+struct DeclaredType {
+    const char* qtName;
+    const char* expected;                       // the word in the message
+    bool (*accepts)(const nlohmann::json& v);
+};
+
+const DeclaredType kDeclaredTypes[] = {
+    {"QString",      "string",  [](const nlohmann::json& v) { return v.is_string(); }},
+    {"bool",         "bool",    [](const nlohmann::json& v) { return v.is_boolean(); }},
+    // `uint` publishes as "int" too (logos-rust-sdk's qt_type_name), so the
+    // signedness is the provider's to check; this only separates a number from
+    // everything that is not one. A FRACTIONAL number is left alone for the
+    // same reason -- the provider owns the whole-number rule and states it.
+    {"int",          "integer", [](const nlohmann::json& v) { return v.is_number(); }},
+    {"uint",         "integer", [](const nlohmann::json& v) { return v.is_number(); }},
+    {"qlonglong",    "integer", [](const nlohmann::json& v) { return v.is_number(); }},
+    {"qulonglong",   "integer", [](const nlohmann::json& v) { return v.is_number(); }},
+    {"double",       "number",  [](const nlohmann::json& v) { return v.is_number(); }},
+    {"float",        "number",  [](const nlohmann::json& v) { return v.is_number(); }},
+    {"QVariantList", "array",   [](const nlohmann::json& v) { return v.is_array(); }},
+    {"QStringList",  "array",   [](const nlohmann::json& v) { return v.is_array(); }},
+    {"QVariantMap",  "object",  [](const nlohmann::json& v) { return v.is_object(); }},
+};
+
+const DeclaredType* declaredType(const std::string& qtName)
+{
+    for (const DeclaredType& t : kDeclaredTypes)
+        if (qtName == t.qtName) return &t;
+    return nullptr;
+}
+
 } // namespace
+
+bool argumentMismatch(const MethodInfo& method,
+                      const nlohmann::json& args,
+                      std::string& reason)
+{
+    if (!method.paramsPublished) return false;
+    if (!args.is_array()) return false;
+    // A COUNT is class B, and the provider answers it with invalid_args. Saying
+    // anything here would be guessing at a call the provider already judges.
+    if (args.size() != method.paramTypes.size()) return false;
+
+    for (size_t i = 0; i < method.paramTypes.size(); ++i) {
+        const nlohmann::json& v = args[i];
+        if (v.is_null()) continue;   // `?T`'s empty state; no declared type refuses it here
+        const DeclaredType* t = declaredType(method.paramTypes[i]);
+        if (!t || t->accepts(v)) continue;
+        reason = std::string("expected ") + t->expected + " at arg" + std::to_string(i)
+               + ", got " + v.type_name();
+        return true;
+    }
+    return false;
+}
 
 bool dispatchRejection(const nlohmann::json& v, CallFailure& out)
 {
@@ -37,6 +95,7 @@ bool dispatchRejection(const nlohmann::json& v, CallFailure& out)
 LogosMap callEnvelope(const std::string& module,
                       const std::string& method,
                       const nlohmann::json& ret,
+                      const nlohmann::json& args,
                       CallFailure failure,
                       const MethodLister& listMethods)
 {
@@ -47,10 +106,58 @@ LogosMap callEnvelope(const std::string& module,
     // the call and must read identically to whoever asked.
     if (failure.ok()) dispatchRejection(ret, failure);
 
+    // THE NULL RETURN, and the one round-trip that is allowed to explain it.
+    //
+    // Every provider flavour answers an unknown method name with a bare null,
+    // byte-identical to a method that legitimately returns null.
+    // logos_protocol.h says so in as many words ("NOT reported, and it is not
+    // an oversight: an unknown method name"), and the cdylib dispatch ends in
+    // `return nullptr;  // unknown method` (lidl_gen_cdylib.cpp). No transport
+    // can separate the two -- but core_service can ASK, because the module
+    // publishes its own interface. That happens only on a null return, so the
+    // ordinary path is unaffected.
+    //
+    // The SAME answer settles the second way a call goes quiet, which is the
+    // one an operator actually meets: an argument whose type the declared
+    // parameter cannot take. `logoscore call keystore_module has_address` with
+    // a number for its `tstr` came back {"result": null, "status": "ok"} --
+    // exit code 0, nothing logged, and no layer between the two ends saying a
+    // word. The method list already in hand names the parameter types, so the
+    // sentence is there to be said; see argumentMismatch for how narrowly.
+    //
+    // Stay silent when introspection fails or comes back empty: an unproven
+    // METHOD_NOT_FOUND would just be the old null-means-failure guess wearing a
+    // better name, and an unproven argument complaint would refuse a working
+    // call outright.
+    if (failure.ok() && ret.is_null() && listMethods) {
+        const std::vector<MethodInfo> methods = listMethods();
+        const MethodInfo* found = nullptr;
+        for (const MethodInfo& m : methods)
+            if (m.name == method) { found = &m; break; }
+
+        if (!methods.empty() && !found) {
+            std::vector<std::string> names;
+            names.reserve(methods.size());
+            for (const MethodInfo& m : methods) names.push_back(m.name);
+            const std::string msg =
+                "Method '" + method + "' not found on module '" + module + "'.";
+            result["status"]            = "error";
+            result["code"]              = "METHOD_NOT_FOUND";
+            result["message"]           = msg;
+            result["available_methods"] = names;   // docs/spec.md's envelope
+            return result;
+        }
+
+        std::string reason;
+        if (found && argumentMismatch(*found, args, reason))
+            failure = CallFailure{"argument_mismatch", reason, module};
+    }
+
     if (!failure.ok()) {
         // ONE code for every transport-detected failure, exactly as before:
         // object_unavailable / timeout / transport_error / call_failed /
-        // unauthorized, plus the folded provider refusal. The specific code
+        // unauthorized, plus the folded provider refusal and the argument
+        // mismatch read off the module's own interface. The specific code
         // rides in `error` so a JSON consumer can tell them apart without
         // parsing prose, and is appended to the message for a human reader.
         const std::string msg = "Call to " + module + "." + method + " failed ("
@@ -62,34 +169,6 @@ LogosMap callEnvelope(const std::string& module,
                                      {"message", failure.message},
                                      {"origin",  failure.origin}};
         return result;
-    }
-
-    // The one ambiguity the wire really does have.
-    //
-    // Every provider flavour answers an unknown method name with a bare null,
-    // byte-identical to a method that legitimately returns null.
-    // logos_protocol.h says so in as many words ("NOT reported, and it is not
-    // an oversight: an unknown method name"), and the cdylib dispatch ends in
-    // `return nullptr;  // unknown method` (lidl_gen_cdylib.cpp). No transport
-    // can separate the two — but core_service can ASK, because the module
-    // publishes its own method list. That happens only on a null return, so
-    // the ordinary path is unaffected.
-    //
-    // Stay silent when introspection fails or comes back empty: an unproven
-    // METHOD_NOT_FOUND would just be the old null-means-failure guess wearing a
-    // better name.
-    if (ret.is_null() && listMethods) {
-        const std::vector<std::string> names = listMethods();
-        if (!names.empty()
-            && std::find(names.begin(), names.end(), method) == names.end()) {
-            const std::string msg =
-                "Method '" + method + "' not found on module '" + module + "'.";
-            result["status"]            = "error";
-            result["code"]              = "METHOD_NOT_FOUND";
-            result["message"]           = msg;
-            result["available_methods"] = names;   // docs/spec.md's envelope
-            return result;
-        }
     }
 
     // Success — INCLUDING a null result. `null` is a value here: an empty

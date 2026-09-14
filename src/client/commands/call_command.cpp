@@ -1,4 +1,5 @@
 #include "call_command.h"
+#include "arg_coerce.h"
 #include "../../string_utils.h"
 #include <fmt/format.h>
 #include <fstream>
@@ -106,66 +107,10 @@ int CallCommand::execute(const std::vector<std::string>& args)
         }
         const std::string& resolved = *resolvedOpt;  // may be "" (empty @file)
 
-        if (resolved == "true") {
-            resolvedArgs.push_back(true);
-        } else if (resolved == "false") {
-            resolvedArgs.push_back(false);
-        } else {
-            // std::stoll/std::stod parse a leading prefix and ignore the rest,
-            // so "1.25" would parse as int 1. Require the whole string to be
-            // consumed (matching the old QString::toInt(&ok) semantics) before
-            // accepting it as that type. Trim first so numeric @file params that
-            // end in a newline (e.g. "123\n") still coerce to a number, while
-            // partial parses like "1.25" are still rejected as int.
-            //
-            // 64-BIT, in both signednesses. LIDL `int`/`uint` are int64_t /
-            // uint64_t everywhere, so an argument must survive the full range.
-            // This used std::stoi — 32 bits — and every integer outside int32
-            // threw out_of_range, got swallowed, and was re-parsed by std::stod
-            // as a DOUBLE. Under 2^53 that is exact and looks fine; above it the
-            // value is silently rounded (echoUint 9007199254740993 came back
-            // 9007199254740992). stoull covers the band above int64max; it is
-            // only tried for a non-negative literal because stoull("-1") happily
-            // wraps to 18446744073709551615.
-            const std::string num = strutil::trim(resolved);
-            bool isInt = false;
-            long long intVal = 0;
-            try {
-                size_t pos = 0;
-                intVal = std::stoll(num, &pos);
-                isInt = (pos == num.size());
-            } catch (...) {}
-
-            bool isUint = false;
-            unsigned long long uintVal = 0;
-            if (!isInt && !num.empty() && num.front() != '-') {
-                try {
-                    size_t pos = 0;
-                    uintVal = std::stoull(num, &pos);
-                    isUint = (pos == num.size());
-                } catch (...) {}
-            }
-
-            if (isInt) {
-                resolvedArgs.push_back(intVal);
-            } else if (isUint) {
-                resolvedArgs.push_back(uintVal);
-            } else {
-                bool isDouble = false;
-                double dblVal = 0.0;
-                try {
-                    size_t pos = 0;
-                    dblVal = std::stod(num, &pos);
-                    isDouble = (pos == num.size());
-                } catch (...) {}
-
-                if (isDouble) {
-                    resolvedArgs.push_back(dblVal);
-                } else {
-                    resolvedArgs.push_back(resolved);
-                }
-            }
-        }
+        // The one-argument type guess, in arg_coerce.cpp so it can be pinned
+        // by the unit suite on its own. `0x` hex, `inf` and `nan` are STRINGS:
+        // see that file for the address that was silently becoming 7.9e+47.
+        resolvedArgs.push_back(argcoerce::scalar(resolved));
     }
 
     LogosMap result = client().callModuleMethod(moduleName, methodName, resolvedArgs);

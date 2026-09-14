@@ -25,6 +25,7 @@ set(TEST_LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/client/commands/list_modules_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/module_info_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/call_command.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/commands/arg_coerce.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/watch_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/stats_command.cpp
     ${CMAKE_SOURCE_DIR}/src/client/commands/stop_command.cpp
@@ -68,6 +69,7 @@ add_executable(unit_tests
     test_local_endpoint.cpp
     test_package_bootstrap.cpp
     test_call_envelope.cpp
+    test_arg_coerce.cpp
     test_rpc_deadlines.cpp
 )
 

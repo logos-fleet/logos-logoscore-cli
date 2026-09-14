@@ -462,31 +462,62 @@ LogosList CoreServiceImpl::getModuleStats()
 
 namespace {
 
-// The names a module says it exposes, via its own getPluginMethods.
+// The interface a module says it exposes, via its own getPluginMethods.
 //
-// Only ever consulted to resolve the ONE ambiguity the wire genuinely cannot
+// Only ever consulted to resolve the ambiguities the wire genuinely cannot
 // (see call_envelope.cpp), so the extra round-trip is paid on a null return and
 // nowhere else. Returns empty when introspection itself failed — the caller
 // must then not claim the method is missing, because it does not know.
-std::vector<std::string> exposedMethodNames(LogosAPIClient* client,
-                                            const std::string& module)
+//
+// `parameters` is present only when the method HAS parameters (both provider
+// flavours omit the key otherwise), which is why paramsPublished is set from
+// the presence of a well-formed array rather than from its size: "no
+// parameters" and "did not say" are different answers and the caller acts on
+// only one of them.
+std::vector<core_service::MethodInfo> exposedMethods(LogosAPIClient* client,
+                                                     const std::string& module)
 {
-    std::vector<std::string> names;
+    std::vector<core_service::MethodInfo> out;
     logos::CallError err;
     const nlohmann::json methods = logos::qvariantToNlohmann(
         client->invokeRemoteMethod(QString::fromStdString(module),
                                    QStringLiteral("getPluginMethods"),
                                    QVariantList(), Timeout(), &err));
-    if (!err.ok() || !methods.is_array()) return names;
+    if (!err.ok() || !methods.is_array()) return out;
     for (const auto& m : methods) {
+        core_service::MethodInfo info;
         if (m.is_object()) {
             auto n = m.find("name");
-            if (n != m.end() && n->is_string()) names.push_back(n->get<std::string>());
+            if (n == m.end() || !n->is_string()) continue;
+            info.name = n->get<std::string>();
+            auto params = m.find("parameters");
+            if (params != m.end() && params->is_array()) {
+                info.paramsPublished = true;
+                for (const auto& p : *params) {
+                    auto t = p.is_object() ? p.find("type") : p.end();
+                    // A parameter whose type is missing or not a string leaves
+                    // the whole list unusable: the positions have to line up
+                    // with the arguments or the wrong one gets named.
+                    if (t == p.end() || !t->is_string()) {
+                        info.paramsPublished = false;
+                        info.paramTypes.clear();
+                        break;
+                    }
+                    info.paramTypes.push_back(t->get<std::string>());
+                }
+            } else if (params == m.end()) {
+                // Absent because the method takes none — the shape both
+                // flavours emit for a zero-parameter method.
+                info.paramsPublished = true;
+            }
         } else if (m.is_string()) {
-            names.push_back(m.get<std::string>());
+            info.name = m.get<std::string>();   // a bare name says nothing about arguments
+        } else {
+            continue;
         }
+        out.push_back(std::move(info));
     }
-    return names;
+    return out;
 }
 
 } // namespace
@@ -545,9 +576,9 @@ StdLogosResult CoreServiceImpl::callModuleMethod(const std::string& module,
     const nlohmann::json ret = logos::qvariantToNlohmann(qret);
 
     result = core_service::callEnvelope(
-        module, method, ret,
+        module, method, ret, args,
         core_service::CallFailure{err.code, err.message, err.origin},
-        [&]() { return exposedMethodNames(moduleClient, module); });
+        [&]() { return exposedMethods(moduleClient, module); });
 
     const bool ok = result.value("status", std::string{}) == "ok";
     if (!ok)

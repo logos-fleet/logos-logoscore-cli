@@ -73,24 +73,58 @@ struct CallFailure {
 // 4-key object, and a non-string value all stay DATA.
 bool dispatchRejection(const nlohmann::json& v, CallFailure& out);
 
-// Supplies the module's exposed method names, or an empty vector when the
-// module could not be asked. callEnvelope invokes this AT MOST ONCE, and only
-// on the single path that needs it, so the ordinary call still costs exactly
-// one round-trip.
-using MethodLister = std::function<std::vector<std::string>()>;
+// One method as the module describes itself through getPluginMethods.
+struct MethodInfo {
+    std::string name;
+    // The DECLARED parameter types, spelled the way both provider flavours
+    // publish them: Qt type names ("QString", "int", "double", "bool",
+    // "QVariantList", "QVariantMap", "QByteArray", "QVariant"). `?T` and `any`
+    // publish as "QVariant", which is exactly the answer "no rule here".
+    std::vector<std::string> paramTypes;
+    // Whether the module published a parameter list at all. A method with no
+    // parameters has none, and that is NOT the same as a module that does not
+    // describe its parameters -- the first licenses an arity comparison, the
+    // second does not.
+    bool paramsPublished = false;
+};
+
+// Supplies the module's exposed methods, or an empty vector when the module
+// could not be asked. callEnvelope invokes this AT MOST ONCE, and only on the
+// single path that needs it, so the ordinary call still costs exactly one
+// round-trip.
+using MethodLister = std::function<std::vector<MethodInfo>()>;
+
+// Whether `args` can satisfy `method`'s declared parameter list, and if not,
+// why -- in logos-protocol's own wording ("expected string at arg0, got
+// number"), so a reader cannot tell this sentence apart from a provider's.
+//
+// CONSERVATIVE BY CONSTRUCTION, because a false positive here would refuse a
+// call that works. It answers "mismatch" only when the module published a
+// parameter list, the arity agrees (a count is class B and the provider's job),
+// the declared type has an unambiguous JSON counterpart, and the value is not
+// null (null is `?T`'s empty state, and no declared type rules it out from
+// here). Everything else is silence.
+bool argumentMismatch(const MethodInfo& method,
+                      const nlohmann::json& args,
+                      std::string& reason);
 
 // The envelope for one proxied call.
 //
 //   {"status":"ok","module":...,"method":...,"result":<value>}
 //   {"status":"error","code":"METHOD_FAILED","message":...,"error":{...}}
+//        error.code is the transport's, or the provider's own rejection code,
+//        or "argument_mismatch" -- this function's own, and the only one in
+//        the set that no provider ever said.
 //   {"status":"error","code":"METHOD_NOT_FOUND","message":...,
 //    "available_methods":[...]}
 //
 // `failure` is what the transport reported (see CallFailure); `ret` is the
-// value the module answered with, already decoded to JSON.
+// value the module answered with, already decoded to JSON; `args` is what was
+// sent, needed only to explain a null return (see argumentMismatch).
 LogosMap callEnvelope(const std::string& module,
                       const std::string& method,
                       const nlohmann::json& ret,
+                      const nlohmann::json& args,
                       CallFailure failure,
                       const MethodLister& listMethods);
 
