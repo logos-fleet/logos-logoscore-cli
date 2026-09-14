@@ -31,16 +31,52 @@ namespace {
 
 // An introspection hook that records whether it was consulted, so the tests can
 // assert the ordinary path does NOT pay for the extra round-trip.
+//
+// A bare NAME publishes no parameter list, which is the shape a module that
+// describes only its method names produces — and the shape every case that
+// predates the argument check wants, because it makes argumentMismatch silent.
 struct Lister {
-    std::vector<std::string> names;
+    std::vector<core_service::MethodInfo> methods;
     mutable int calls = 0;
 
+    Lister(std::initializer_list<const char*> names)
+    {
+        for (const char* n : names) {
+            core_service::MethodInfo m;
+            m.name = n;
+            methods.push_back(m);
+        }
+    }
+    explicit Lister(std::vector<core_service::MethodInfo> ms)
+        : methods(std::move(ms)) {}
+
     core_service::MethodLister fn() const {
-        return [this]() { ++calls; return names; };
+        return [this]() { ++calls; return methods; };
     }
 };
 
-const Lister kBasicModule{{"returnTrue", "returnNothing", "echo"}};
+const Lister kBasicModule{"returnTrue", "returnNothing", "echo"};
+
+// One method with a published parameter list.
+core_service::MethodInfo typed(const char* name,
+                               std::vector<std::string> paramTypes)
+{
+    core_service::MethodInfo m;
+    m.name = name;
+    m.paramTypes = std::move(paramTypes);
+    m.paramsPublished = true;
+    return m;
+}
+
+// The call shape the cases below the argument check use: no arguments sent, so
+// nothing for it to judge.
+LogosMap callEnv(const std::string& module, const std::string& method,
+                 const nlohmann::json& ret, CallFailure failure,
+                 const core_service::MethodLister& lister)
+{
+    return core_service::callEnvelope(module, method, ret,
+                                      nlohmann::json::array(), failure, lister);
+}
 
 } // namespace
 
@@ -48,7 +84,7 @@ const Lister kBasicModule{{"returnTrue", "returnNothing", "echo"}};
 
 TEST(CallEnvelope, NullFromAKnownMethodIsOk)
 {
-    const LogosMap env = callEnvelope("test_basic_module", "returnNothing",
+    const LogosMap env = callEnv("test_basic_module", "returnNothing",
                                       nlohmann::json(), CallFailure{},
                                       kBasicModule.fn());
 
@@ -68,7 +104,7 @@ TEST(CallEnvelope, FalseyValuesAreOkToo)
     for (const nlohmann::json v : {nlohmann::json(false), nlohmann::json(0),
                                    nlohmann::json(""), nlohmann::json::array(),
                                    nlohmann::json::object()}) {
-        const LogosMap env = callEnvelope("m", "echo", v, CallFailure{},
+        const LogosMap env = callEnv("m", "echo", v, CallFailure{},
                                           kBasicModule.fn());
         EXPECT_EQ(env.value("status", std::string{}), "ok") << v.dump();
         EXPECT_EQ(env.value("result", nlohmann::json()), v) << v.dump();
@@ -77,8 +113,8 @@ TEST(CallEnvelope, FalseyValuesAreOkToo)
 
 TEST(CallEnvelope, OrdinaryCallNeverIntrospects)
 {
-    Lister lister{{"echo"}};
-    callEnvelope("m", "echo", nlohmann::json("hi"), CallFailure{}, lister.fn());
+    Lister lister{"echo"};
+    callEnv("m", "echo", nlohmann::json("hi"), CallFailure{}, lister.fn());
     EXPECT_EQ(lister.calls, 0)
         << "a non-null result must cost exactly one round-trip";
 }
@@ -91,8 +127,8 @@ TEST(CallEnvelope, TransportFailureIsMethodFailed)
     // call, and all of them keep the single documented METHOD_FAILED code.
     for (const char* code : {"object_unavailable", "timeout", "transport_error",
                              "call_failed", "unauthorized"}) {
-        Lister lister{{"returnTrue"}};
-        const LogosMap env = callEnvelope(
+        Lister lister{"returnTrue"};
+        const LogosMap env = callEnv(
             "test_basic_module", "returnTrue", nlohmann::json(),
             CallFailure{code, "the transport said so", "test_basic_module"},
             lister.fn());
@@ -115,7 +151,7 @@ TEST(CallEnvelope, FailureWinsOverAValue)
 {
     // A transport failure can still hand back a value; the error channel is
     // what decides, in both directions.
-    const LogosMap env = callEnvelope("m", "echo", nlohmann::json("leftover"),
+    const LogosMap env = callEnv("m", "echo", nlohmann::json("leftover"),
                                       CallFailure{"timeout", "took too long", "m"},
                                       kBasicModule.fn());
     EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED");
@@ -129,7 +165,7 @@ TEST(CallEnvelope, DispatchRejectionIsMethodFailed)
                                  {"message", "wrong argument count"},
                                  {"origin", "test_basic_module"}};
 
-    const LogosMap env = callEnvelope("test_basic_module", "isPositive", refusal,
+    const LogosMap env = callEnv("test_basic_module", "isPositive", refusal,
                                       CallFailure{}, kBasicModule.fn());
 
     EXPECT_EQ(env.value("status", std::string{}), "error");
@@ -152,7 +188,7 @@ TEST(CallEnvelope, InvalidArgsIsMethodFailed)
                                  {"message", "expected 1 arguments, got 0"},
                                  {"origin", "test_basic_module"}};
 
-    const LogosMap env = callEnvelope("test_basic_module", "isPositive", refusal,
+    const LogosMap env = callEnv("test_basic_module", "isPositive", refusal,
                                       CallFailure{}, kBasicModule.fn());
 
     EXPECT_EQ(env.value("status", std::string{}), "error");
@@ -181,7 +217,7 @@ TEST(CallEnvelope, EveryRejectionCodeIsMethodFailed)
         EXPECT_EQ(out.message, "m");
         EXPECT_EQ(out.origin, "o");
 
-        const LogosMap env = callEnvelope("test_basic_module", "isPositive",
+        const LogosMap env = callEnv("test_basic_module", "isPositive",
                                           nlohmann::json{{"code", code},
                                                          {"message", "m"},
                                                          {"origin", "o"}},
@@ -245,7 +281,7 @@ TEST(CallEnvelope, DispatchRejectionMatchStaysNarrow)
     const nlohmann::json userMap{{"code", "amber"},
                                  {"message", "hello"},
                                  {"origin", "sensor"}};
-    const LogosMap env = callEnvelope("test_basic_module", "describe", userMap,
+    const LogosMap env = callEnv("test_basic_module", "describe", userMap,
                                       CallFailure{}, kBasicModule.fn());
     EXPECT_EQ(env.value("status", std::string{}), "ok");
     EXPECT_EQ(env["result"], userMap);
@@ -258,8 +294,8 @@ TEST(CallEnvelope, UnknownMethodIsMethodNotFound)
     // Providers answer an unknown method with a bare null and no error — see
     // logos_protocol.h and lidl_gen_cdylib.cpp's `return nullptr; // unknown
     // method`. Only the module's own method list can settle it.
-    Lister lister{{"returnTrue", "echo"}};
-    const LogosMap env = callEnvelope("test_basic_module", "noSuchMethod",
+    Lister lister{"returnTrue", "echo"};
+    const LogosMap env = callEnv("test_basic_module", "noSuchMethod",
                                       nlohmann::json(), CallFailure{}, lister.fn());
 
     EXPECT_EQ(env.value("status", std::string{}), "error");
@@ -278,8 +314,8 @@ TEST(CallEnvelope, UnprovableMissingMethodStaysOk)
     // that publishes nothing). We cannot prove the method is missing, so we do
     // not claim it — that would be the old null-means-failure guess wearing a
     // better name.
-    Lister lister{{}};
-    const LogosMap env = callEnvelope("m", "whoKnows", nlohmann::json(),
+    Lister lister{};
+    const LogosMap env = callEnv("m", "whoKnows", nlohmann::json(),
                                       CallFailure{}, lister.fn());
 
     EXPECT_EQ(env.value("status", std::string{}), "ok");
@@ -290,7 +326,7 @@ TEST(CallEnvelope, UnprovableMissingMethodStaysOk)
 
 TEST(CallEnvelope, NoListerAtAllStaysOk)
 {
-    const LogosMap env = callEnvelope("m", "whoKnows", nlohmann::json(),
+    const LogosMap env = callEnv("m", "whoKnows", nlohmann::json(),
                                       CallFailure{}, nullptr);
     EXPECT_EQ(env.value("status", std::string{}), "ok");
 }
@@ -299,9 +335,9 @@ TEST(CallEnvelope, NoListerAtAllStaysOk)
 
 TEST(CallEnvelope, EmptyAndFailedAreDistinguishable)
 {
-    const LogosMap empty = callEnvelope("m", "returnNothing", nlohmann::json(),
+    const LogosMap empty = callEnv("m", "returnNothing", nlohmann::json(),
                                         CallFailure{}, kBasicModule.fn());
-    const LogosMap failed = callEnvelope(
+    const LogosMap failed = callEnv(
         "m", "returnNothing", nlohmann::json(),
         CallFailure{"object_unavailable", "module is gone", "m"},
         kBasicModule.fn());
@@ -312,4 +348,158 @@ TEST(CallEnvelope, EmptyAndFailedAreDistinguishable)
               failed.value("status", std::string{}));
     EXPECT_EQ(empty.value("status", std::string{}), "ok");
     EXPECT_EQ(failed.value("code", std::string{}), "METHOD_FAILED");
+}
+
+// ── An argument the signature cannot take: the OTHER silent null ────────────
+//
+// `logoscore call keystore_module has_address <a number>` answered
+// {"result": null, "status": "ok"} — exit code 0, nothing logged by the daemon,
+// and a script reading the exit code saw success. The method EXISTS, so
+// METHOD_NOT_FOUND does not apply; the module list already in hand names the
+// parameter types, so the envelope can say what went wrong instead of nothing.
+
+TEST(CallEnvelope, NumberForAStringParameterIsMethodFailed)
+{
+    const Lister lister{{typed("has_address", {"QString"})}};
+    const LogosMap env = core_service::callEnvelope(
+        "keystore_module", "has_address", nlohmann::json(),
+        nlohmann::json::array({7.9250088148318908e+47}),
+        CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env.value("status", std::string{}), "error");
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED");
+    ASSERT_TRUE(env.contains("error"));
+    EXPECT_EQ(env["error"].value("code", std::string{}), "argument_mismatch");
+    // logos-protocol's own wording, so a provider's sentence and this one read
+    // the same to whoever has to act on it.
+    EXPECT_EQ(env["error"].value("message", std::string{}),
+              "expected string at arg0, got number");
+    EXPECT_EQ(env["error"].value("origin", std::string{}), "keystore_module");
+    EXPECT_EQ(lister.calls, 1);
+}
+
+TEST(CallEnvelope, TheOFFENDINGArgumentIsNamedByPosition)
+{
+    const Lister lister{{typed("timed_unlock", {"QString", "QString", "int"})}};
+    const LogosMap env = core_service::callEnvelope(
+        "keystore_module", "timed_unlock", nlohmann::json(),
+        nlohmann::json::array({"0xabc", "hunter2", "not-a-number"}),
+        CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env["error"].value("message", std::string{}),
+              "expected integer at arg2, got string");
+}
+
+TEST(CallEnvelope, EveryDeclaredTypeRefusesTheWrongShape)
+{
+    struct Case { const char* qtType; nlohmann::json arg; const char* expected; };
+    const std::vector<Case> cases{
+        {"QString",      nlohmann::json(1),                 "expected string at arg0, got number"},
+        {"QString",      nlohmann::json(true),              "expected string at arg0, got boolean"},
+        {"bool",         nlohmann::json(1),                 "expected bool at arg0, got number"},
+        {"bool",         nlohmann::json("true"),            "expected bool at arg0, got string"},
+        {"int",          nlohmann::json("42"),              "expected integer at arg0, got string"},
+        {"double",       nlohmann::json("1.5"),             "expected number at arg0, got string"},
+        {"QVariantList", nlohmann::json("notalist"),        "expected array at arg0, got string"},
+        {"QStringList",  nlohmann::json::object(),          "expected array at arg0, got object"},
+        {"QVariantMap",  nlohmann::json::array({1}),        "expected object at arg0, got array"},
+    };
+    for (const Case& c : cases) {
+        const Lister lister{{typed("f", {c.qtType})}};
+        const LogosMap env = core_service::callEnvelope(
+            "m", "f", nlohmann::json(), nlohmann::json::array({c.arg}),
+            CallFailure{}, lister.fn());
+        EXPECT_EQ(env.value("code", std::string{}), "METHOD_FAILED") << c.qtType;
+        EXPECT_EQ(env["error"].value("message", std::string{}), c.expected) << c.qtType;
+    }
+}
+
+// ── And the silences, which is where a check like this earns its keep ───────
+
+TEST(CallEnvelope, AMatchingArgumentIsStillOk)
+{
+    // The address that started all this, as the string it now is: the method
+    // legitimately answered null, and that must survive as a null result.
+    const Lister lister{{typed("has_address", {"QString"})}};
+    const LogosMap env = core_service::callEnvelope(
+        "keystore_module", "has_address", nlohmann::json(),
+        nlohmann::json::array({"0x8ad0Fcf71D6FBD060BAfd45f5155b1e52d3591C5"}),
+        CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env.value("status", std::string{}), "ok");
+    EXPECT_TRUE(env["result"].is_null());
+}
+
+TEST(CallEnvelope, AnUnknownDeclaredTypeIsNeverSecondGuessed)
+{
+    // "QVariant" is what `any` and every `?T` publish as, and it accepts
+    // anything. Refusing here would refuse calls that work.
+    for (const char* t : {"QVariant", "QByteArray", "LogosResult", "SomeEnum"}) {
+        const Lister lister{{typed("f", {t})}};
+        const LogosMap env = core_service::callEnvelope(
+            "m", "f", nlohmann::json(), nlohmann::json::array({42}),
+            CallFailure{}, lister.fn());
+        EXPECT_EQ(env.value("status", std::string{}), "ok") << t;
+    }
+}
+
+TEST(CallEnvelope, ANullArgumentIsOptionalsEmptyState)
+{
+    const Lister lister{{typed("f", {"QString"})}};
+    const LogosMap env = core_service::callEnvelope(
+        "m", "f", nlohmann::json(), nlohmann::json::array({nullptr}),
+        CallFailure{}, lister.fn());
+    EXPECT_EQ(env.value("status", std::string{}), "ok");
+}
+
+TEST(CallEnvelope, AWrongARITYIsLeftToTheProvider)
+{
+    // A COUNT is class B and the provider answers it with invalid_args. Two
+    // layers reporting the same thing differently is worse than one.
+    const Lister lister{{typed("f", {"QString", "QString"})}};
+    for (const nlohmann::json args : {nlohmann::json::array({1}),
+                                      nlohmann::json::array({1, 2, 3})}) {
+        const LogosMap env = core_service::callEnvelope(
+            "m", "f", nlohmann::json(), args, CallFailure{}, lister.fn());
+        EXPECT_EQ(env.value("status", std::string{}), "ok") << args.dump();
+    }
+}
+
+TEST(CallEnvelope, AModuleThatPublishesNoParameterListIsNeverJudged)
+{
+    // Bare names only — paramsPublished is false, so there is nothing to
+    // compare against and the envelope says nothing.
+    const Lister lister{"f"};
+    const LogosMap env = core_service::callEnvelope(
+        "m", "f", nlohmann::json(), nlohmann::json::array({42}),
+        CallFailure{}, lister.fn());
+    EXPECT_EQ(env.value("status", std::string{}), "ok");
+}
+
+TEST(CallEnvelope, AProviderRejectionStillWins)
+{
+    // The provider spoke first; its own code and sentence are the ones that
+    // reach the caller, not this function's guess at the same fault.
+    const Lister lister{{typed("f", {"QString"})}};
+    const nlohmann::json refusal{{"code", "dispatch_failed"},
+                                 {"message", "expected string at arg0, got number"},
+                                 {"origin", "m"}};
+    const LogosMap env = core_service::callEnvelope(
+        "m", "f", refusal, nlohmann::json::array({42}), CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env["error"].value("code", std::string{}), "dispatch_failed");
+    EXPECT_EQ(lister.calls, 0) << "a refusal is already an answer; do not go back to ask";
+}
+
+TEST(CallEnvelope, AnUnknownMethodIsStillReportedAsMissingNotMistyped)
+{
+    // Both checks live on the same null return; the method's absence is the
+    // more useful of the two answers and must be the one given.
+    const Lister lister{{typed("has_address", {"QString"})}};
+    const LogosMap env = core_service::callEnvelope(
+        "keystore_module", "hasAddress", nlohmann::json(),
+        nlohmann::json::array({42}), CallFailure{}, lister.fn());
+
+    EXPECT_EQ(env.value("code", std::string{}), "METHOD_NOT_FOUND");
+    EXPECT_EQ(env["available_methods"], nlohmann::json::array({"has_address"}));
 }

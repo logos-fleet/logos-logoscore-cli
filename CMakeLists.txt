@@ -187,6 +187,7 @@ set(SHARED_SOURCES
     src/client/commands/list_modules_command.cpp
     src/client/commands/module_info_command.cpp
     src/client/commands/call_command.cpp
+    src/client/commands/arg_coerce.cpp
     src/client/commands/watch_command.cpp
     src/client/commands/stats_command.cpp
     src/client/commands/stop_command.cpp

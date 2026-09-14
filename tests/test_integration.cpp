@@ -988,6 +988,41 @@ TEST_F(LoadedModuleTest, StringReturns) {
               "https://example.com/p");
 }
 
+// A `0x`-hex argument reaches a `tstr` parameter as the string the user typed.
+//
+// END TO END, because that is where the defect lived: the unit suite
+// (tests/test_arg_coerce.cpp) proves the inference, but what an operator meets
+// is a real module answering nothing. `std::stod` accepts C99 hexadecimal
+// floats, so this address inferred the DOUBLE 7.9250088148318908e+47 and the
+// call came back with no value and status "ok". Every EVM address, transaction
+// hash, private key and signature is `0x` + hex.
+TEST_F(LoadedModuleTest, HexArgumentsReachAStringParameterIntact) {
+    const std::string addr = "0x8ad0Fcf71D6FBD060BAfd45f5155b1e52d3591C5";
+    EXPECT_EQ(call("echo", addr).get<std::string>(), addr);
+    EXPECT_EQ(call("echo", "0x8ad0fcf71d6fbd060bafd45f5155b1e52d3591c5")
+                  .get<std::string>(),
+              "0x8ad0fcf71d6fbd060bafd45f5155b1e52d3591c5");
+    // The short spellings the same grammar swallowed: a hex integer, an upper
+    // case `0X`, and a genuine hex float with a `p` exponent.
+    EXPECT_EQ(call("echo", "0x1F").get<std::string>(), "0x1F");
+    EXPECT_EQ(call("echo", "0Xff").get<std::string>(), "0Xff");
+    EXPECT_EQ(call("echo", "0x1p4").get<std::string>(), "0x1p4");
+    // `inf` and `nan` are the other two words std::stod accepts. A NaN
+    // serialises as JSON null, so the argument arrived as no value at all.
+    EXPECT_EQ(call("echo", "inf").get<std::string>(), "inf");
+    EXPECT_EQ(call("echo", "nan").get<std::string>(), "nan");
+    // The control from the issue: not valid hex, and a string all along. It is
+    // what made the defect legible -- `0xzz` answered, `0x8ad0...` did not.
+    EXPECT_EQ(call("echo", "0xzz").get<std::string>(), "0xzz");
+    // A hex STRING is one thing; the length of it is another. stringLength
+    // proves the module saw 42 characters rather than a number it stringified.
+    EXPECT_EQ(call("stringLength", addr).get<int>(),
+              static_cast<int>(addr.size()));
+    // And nothing that was a number stopped being one.
+    EXPECT_EQ(call("echoInt", "42").get<int>(), 42);
+    EXPECT_EQ(call("echoInt", "-7").get<int>(), -7);
+}
+
 TEST_F(LoadedModuleTest, LogosResultShapes) {
     nlohmann::json ok = call("successResult");
     EXPECT_TRUE(ok["success"].get<bool>());

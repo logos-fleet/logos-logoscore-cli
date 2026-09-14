@@ -393,15 +393,33 @@ strings are all expressible:
 | `str:<text>` | `<text>` verbatim as a string — no parsing, no coercion | `str:json:x` → `"json:x"`, `str:42` → `"42"` |
 | `@<file>` | the file's raw contents as a string | `@config.json` |
 | `true` / `false` | a boolean | `true` |
-| a whole number | an integer | `42` |
-| a decimal number | a double | `3.14` |
-| anything else | a string | `hello` |
+| a whole DECIMAL number | an integer | `42`, `-7` |
+| a DECIMAL number with a fraction or exponent | a double | `3.14`, `1e5` |
+| anything else | a string | `hello`, `0x8ad0Fcf7…`, `inf` |
 
 `json:` and `str:` are the two explicit escapes, mirroring the convention used
 by `jq` (`--arg` / `--argjson`) and HTTPie (`=` / `:=`): the default path never
 guesses a container, `json:` opts into parsing, and `str:` forces a literal
 string for any value the default rules would otherwise reinterpret (a
 number-like string, or one that itself starts with `json:` / `str:` / `@`).
+
+**A number means a DECIMAL number.** `0x` + hex is a string, and so are `inf`
+and `nan` — the three forms the C library's `strtod` accepts that this table
+does not. It used to accept them, and the cost was silent: every EVM address,
+transaction hash, private key and signature is `0x` + hex, so
+
+```bash
+logosctl call keystore_module has_address 0x8ad0Fcf71D6FBD060BAfd45f5155b1e52d3591C5
+```
+
+inferred the double `7.9250088148318908e+47`, the module's `tstr` parameter
+never saw the address, and the call answered
+`{"result": null, "status": "ok"}` — exit code 0, nothing logged. `0xzz`, which
+is not valid hex, was a string all along, which is what made the two spellings
+of one address behave differently.
+
+A hex argument therefore needs no escape. `str:` remains the way to keep a
+DECIMAL-looking string a string (`str:42`).
 
 **Binary (`bstr`) arguments.** JSON has no native byte type, so bytes use the
 canonical tagged encoding — a JSON object `{"_bytes": "<base64url, unpadded>"}`.

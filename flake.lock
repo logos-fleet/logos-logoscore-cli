@@ -38918,11 +38918,11 @@
         "process-stats": "process-stats_2"
       },
       "locked": {
-        "lastModified": 1789079191,
-        "narHash": "sha256-LD5z/BLLMVW2awxqwmkqWgvd/yG8zsv8nUhvm2HjNGI=",
+        "lastModified": 1789294038,
+        "narHash": "sha256-GX6wSG9lYfzKFPb9AJNLYi10u/rG1iJ196RATtfHdBI=",
         "owner": "logos-fleet",
         "repo": "logos-liblogos",
-        "rev": "dfd1e98c90a2835c76557e4459d20502b3a6c40f",
+        "rev": "fe234f3a6ff089af98bb53e4f83b3b19ef82586c",
         "type": "github"
       },
       "original": {
